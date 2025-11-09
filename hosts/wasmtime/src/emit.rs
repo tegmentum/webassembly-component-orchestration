@@ -6,6 +6,8 @@ use crate::types::{CompositionResult, Digest, Error, ErrorCode, PlanV1};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use wasmparser::{Validator, WasmFeatures};
+use wasm_compose::composer::BytesComponentComposer;
+use wasm_compose::config::BytesConfig;
 
 /// Emit handler for composition
 pub struct EmitHandler {
@@ -239,45 +241,49 @@ impl EmitHandler {
             );
         }
 
-        // Note: Full composition would require:
-        // 1. Creating a wrapper component using wasm-encoder
-        // 2. Nesting all dependency components
-        // 3. Instantiating each component
-        // 4. Wiring imports/exports according to bindings using canonical ABI
-        // 5. Re-exporting the root's exports
-        //
-        // This is complex and requires detailed WIT parsing, instance creation,
-        // and canonical ABI lowering/lifting. The proper way to do this is to use
-        // wasm-compose CLI tool which handles all of this complexity.
-        //
-        // Since wasm-compose requires file paths and we're working with a blob store,
-        // we have a few options:
-        // 1. Write components to temp files and use wasm-compose CLI via process spawn
-        // 2. Implement full composition logic manually (very complex)
-        // 3. For simple cases, return root and rely on runtime linking (current approach)
-        //
-        // For the M3 milestone, we're implementing approach #3: validate all components
-        // exist and are valid, then return the root. The runtime (wasmtime) can handle
-        // import resolution at instantiation time if imports are properly declared.
-
-        self.events.warn(
-            "composition with bindings detected",
-            Some("full static composition not yet implemented - relying on runtime linking".to_string()),
+        self.events.info(
+            "performing static composition",
+            Some(format!("dependencies: {}", plan.bindings.len())),
         );
 
-        // Validate all referenced provider components exist
+        // Build bytes-based configuration
+        let mut config = BytesConfig::new();
+
+        // Add all dependency components referenced in bindings
         for binding in &plan.bindings {
-            if !component_map.contains_key(&binding.provider_id) {
-                return Err(Error::new(
+            let dep_bytes = component_map.get(&binding.provider_id).ok_or_else(|| {
+                Error::new(
                     ErrorCode::EmitCompositionFailed,
                     format!("provider component {} not found", binding.provider_id),
-                ));
-            }
+                )
+            })?;
+
+            // Add as dependency
+            config = config.add_dependency(&binding.provider_id, dep_bytes.as_slice());
+
+            self.events.trace(
+                "added dependency to composition",
+                Some(format!("id: {}, size: {} bytes", binding.provider_id, dep_bytes.len())),
+            );
         }
 
-        // Return the root component
-        // TODO: Implement full static composition using wasm-compose or manual encoding
-        Ok(root_bytes.to_vec())
+        // Create composer with root bytes and configuration
+        let composer = BytesComponentComposer::new(root_bytes, config);
+
+        // Perform composition
+        let composed = composer.compose().map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("wasm-compose failed: {}", e),
+            )
+        })?;
+
+        self.events.info(
+            "static composition complete",
+            Some(format!("output size: {} bytes", composed.len())),
+        );
+
+        Ok(composed)
     }
 
     /// Validate that bytes represent a valid WebAssembly component

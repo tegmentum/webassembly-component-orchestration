@@ -25,11 +25,12 @@ sha2 = "0.10"
 hex = "0.4"
 
 # WIT and component manipulation
-wasm-tools = "1.0"
-wasm-compose = "0.240"
-wit-component = "0.240"
-wasmparser = "0.240"
-wasm-encoder = "0.240"
+# Using local wasm-tools fork with bytes-based API
+wasm-tools = { path = "../../../wasm-tools" }
+wasm-compose = { path = "../../../wasm-tools/crates/wasm-compose" }
+wit-component = { path = "../../../wasm-tools/crates/wit-component" }
+wasmparser = { path = "../../../wasm-tools/crates/wasmparser" }
+wasm-encoder = { path = "../../../wasm-tools/crates/wasm-encoder" }
 
 # File system and I/O
 walkdir = "2"

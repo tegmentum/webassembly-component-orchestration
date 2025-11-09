@@ -1,0 +1,46 @@
+[package]
+name = "compose-host-wasmtime"
+version = "0.0.1"
+edition = "2021"
+authors = ["Zachary Whitley <maintainer@example.com>"]
+description = "Reference host runtime for the compositional WebAssembly system"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+wasmtime = { version = "21", features = ["component-model"] }
+wat = "1"
+
+# CBOR serialization
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+
+# Hashing for CAS and digests
+sha2 = "0.10"
+hex = "0.4"
+
+# WIT and component manipulation
+wasm-tools = "1.0"
+wasm-compose = "0.240"
+wit-component = "0.240"
+wasmparser = "0.240"
+wasm-encoder = "0.240"
+
+# File system and I/O
+walkdir = "2"
+
+# HTTP server for serve-http
+tokio = { version = "1", features = ["full"], optional = true }
+axum = { version = "0.7", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+http-server = ["tokio", "axum"]

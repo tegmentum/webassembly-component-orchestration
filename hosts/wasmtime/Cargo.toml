@@ -25,12 +25,12 @@ sha2 = "0.10"
 hex = "0.4"
 
 # WIT and component manipulation
-# Using local wasm-tools fork with bytes-based API
-wasm-tools = { path = "../../../wasm-tools" }
-wasm-compose = { path = "../../../wasm-tools/crates/wasm-compose" }
-wit-component = { path = "../../../wasm-tools/crates/wit-component" }
-wasmparser = { path = "../../../wasm-tools/crates/wasmparser" }
-wasm-encoder = { path = "../../../wasm-tools/crates/wasm-encoder" }
+# Using forked wasm-tools with bytes-based API for in-memory composition
+wasm-tools = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "bytes-api" }
+wasm-compose = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "bytes-api" }
+wit-component = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "bytes-api" }
+wasmparser = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "bytes-api" }
+wasm-encoder = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "bytes-api" }
 
 # File system and I/O
 walkdir = "2"

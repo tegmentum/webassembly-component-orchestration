@@ -11,7 +11,8 @@ publish = false
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-wasmtime = { version = "21", features = ["component-model"] }
+wasmtime = { version = "38.0.2", features = ["component-model"] }
+wasmtime-wasi = "38.0.2"
 wat = "1"
 
 # CBOR serialization

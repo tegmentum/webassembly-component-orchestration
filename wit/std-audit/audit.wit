@@ -1,0 +1,79 @@
+package std:audit@1.0.0;
+
+/// Standard audit logging interface
+///
+/// Provides structured audit logging for security and compliance.
+/// Audit records are immutable and include cryptographic digests.
+
+interface audit {
+    /// Audit record severity
+    enum severity {
+        info,
+        warning,
+        error,
+        critical,
+    }
+
+    /// Operation type
+    enum operation-type {
+        emit,
+        exec,
+        trust-verify,
+        secret-resolve,
+        policy-enforce,
+    }
+
+    /// Audit record
+    record audit-record {
+        /// Unique record ID
+        id: string,
+        /// Timestamp in milliseconds since epoch
+        timestamp: u64,
+        /// Operation type
+        operation: operation-type,
+        /// Severity level
+        severity: severity,
+        /// Plan digest (SHA-256)
+        plan-digest: list<u8>,
+        /// Execution or emit key (SHA-256)
+        cache-key: option<list<u8>>,
+        /// Tenant ID (for multi-tenancy)
+        tenant-id: option<string>,
+        /// Outcome (e.g., "success", "failure", "denied")
+        outcome: string,
+        /// Exit code for exec operations
+        exit-code: option<u32>,
+        /// Determinism mode used
+        determinism-mode: option<string>,
+        /// Trust policy used
+        trust-policy: option<string>,
+        /// Additional context (JSON-encoded)
+        context: option<string>,
+        /// Actor/principal performing the operation
+        actor: option<string>,
+    }
+
+    /// Record an audit event
+    record-event: func(entry: audit-record);
+
+    /// Query audit records
+    query: func(
+        tenant-id: option<string>,
+        operation: option<operation-type>,
+        since: option<u64>,
+        limit: option<u32>
+    ) -> list<audit-record>;
+
+    /// Get audit record by ID
+    get: func(id: string) -> option<audit-record>;
+
+    /// Export audit log to external system
+    export-log: func(
+        endpoint: string,
+        format: string,
+        since: option<u64>
+    ) -> result<u32, string>;
+
+    /// Verify audit log integrity (using digests)
+    verify-integrity: func(since: option<u64>) -> result<bool, string>;
+}

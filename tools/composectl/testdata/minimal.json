@@ -1,0 +1,21 @@
+{
+  "version": "1",
+  "root": "hello",
+  "components": [
+    {
+      "id": "hello",
+      "digest": [171,205,239,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
+    }
+  ],
+  "bindings": [],
+  "secrets": [],
+  "policy": {
+    "max_memory_bytes": 10485760,
+    "max_execution_time_ms": 5000,
+    "allowed_imports": [],
+    "allowed_exports": [],
+    "network_access": "none",
+    "filesystem_access": "read-only",
+    "determinism": "relaxed"
+  }
+}

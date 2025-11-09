@@ -1,0 +1,79 @@
+; Canonical CBOR Schema for Composition Plan v1
+; Conforms to RFC 8610 (CDDL) and RFC 8949 (CBOR)
+; All maps use integer keys for canonical ordering
+
+plan-v1 = {
+  0: version,        ; "1"
+  1: root,           ; component-id of root
+  2: components,     ; array of component-spec
+  3: bindings,       ; array of import-binding
+  4: secrets,        ; array of secret-binding
+  5: policy,         ; policy record
+}
+
+version = tstr
+
+; Component identifier (string)
+component-id = tstr
+
+; SHA-256 digest as byte string (32 bytes)
+digest = bstr .size 32
+
+component-spec = {
+  0: component-id,   ; id
+  1: digest,         ; content digest
+  ? 2: tstr,         ; source (optional)
+}
+
+import-binding = {
+  0: tstr,           ; import-name
+  1: component-id,   ; provider-id
+  2: tstr,           ; export-name
+}
+
+secret-binding = {
+  0: tstr,           ; secret-id
+  1: tstr,           ; backend-uri
+}
+
+policy = {
+  0: determinism-mode,
+  1: capabilities,
+  ? 2: tstr,         ; tenant (optional)
+  3: resource-limits,
+}
+
+determinism-mode = &(
+  strict: 0,
+  audit: 1,
+  relaxed: 2,
+)
+
+capability = {
+  0: tstr,           ; name
+  1: capability-level,
+}
+
+capability-level = &(
+  required: 0,
+  optional: 1,
+)
+
+capabilities = [* capability]
+
+resource-limits = {
+  ? 0: uint,         ; cpu-ms (optional)
+  ? 1: uint,         ; memory-bytes (optional)
+  ? 2: uint,         ; io-ops (optional)
+}
+
+; Canonical CBOR encoding requirements:
+; 1. Maps use integer keys in ascending order
+; 2. All lengths are definite (no indefinite-length encoding)
+; 3. Strings are UTF-8 NFC normalized
+; 4. Integer keys use shortest encoding
+; 5. No duplicate keys
+; 6. Optional fields (marked with ?) are omitted when not present
+
+; Hash computation:
+; plan-id = SHA256("witcanon:1" || canonical_cbor_encode(plan-v1))

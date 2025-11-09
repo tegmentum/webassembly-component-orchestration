@@ -1,0 +1,531 @@
+use std::collections::{BTreeMap, HashSet};
+use std::convert::TryFrom;
+use std::fs;
+use std::io::{Cursor, Write};
+
+use anyhow::{anyhow, bail, ensure, Context, Result};
+use camino::Utf8PathBuf;
+use ciborium::de::from_reader;
+use ciborium::value::{CanonicalValue, Value as CiborValue};
+use clap::{Parser, Subcommand};
+use serde::Deserialize;
+use serde_cbor::Value as SerdeValue;
+use sha2::{Digest, Sha256};
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "composectl",
+    about = "Compose and execute WebAssembly component plans"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Plan {
+        #[command(subcommand)]
+        action: PlanCommand,
+    },
+    Emit {
+        #[command(subcommand)]
+        action: EmitCommand,
+    },
+    Exec {
+        #[command(subcommand)]
+        action: ExecCommand,
+    },
+    Conformance {
+        #[command(subcommand)]
+        action: ConformanceCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PlanCommand {
+    /// Validate a plan file for basic invariants.
+    Validate {
+        /// Path to the plan encoded as canonical CBOR.
+        plan: Utf8PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum EmitCommand {
+    /// Compose a plan into an executable artifact.
+    Build {
+        /// Plan to compose.
+        plan: Utf8PathBuf,
+        /// Output artifact path.
+        #[arg(short, long)]
+        output: Utf8PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ExecCommand {
+    /// Execute an artifact as a CLI.
+    Run {
+        /// Compiled artifact to execute.
+        artifact: Utf8PathBuf,
+    },
+    /// Serve an artifact over HTTP for local testing.
+    Serve {
+        /// Compiled artifact to serve.
+        artifact: Utf8PathBuf,
+        /// TCP port to bind.
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConformanceCommand {
+    /// Execute the conformance suite against a host implementation.
+    Run {
+        /// Host implementation identifier (e.g. "wasmtime").
+        #[arg(long)]
+        host: String,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Plan { action } => handle_plan(action),
+        Commands::Emit { action } => handle_emit(action),
+        Commands::Exec { action } => handle_exec(action),
+        Commands::Conformance { action } => handle_conformance(action),
+    }
+}
+
+fn handle_plan(command: PlanCommand) -> Result<()> {
+    match command {
+        PlanCommand::Validate { plan } => validate_plan(plan),
+    }
+}
+
+fn handle_emit(command: EmitCommand) -> Result<()> {
+    match command {
+        EmitCommand::Build { plan, output } => build_artifact(plan, output),
+    }
+}
+
+fn handle_exec(command: ExecCommand) -> Result<()> {
+    match command {
+        ExecCommand::Run { artifact } => run_artifact(artifact),
+        ExecCommand::Serve { artifact, port } => serve_artifact(artifact, port),
+    }
+}
+
+fn handle_conformance(command: ConformanceCommand) -> Result<()> {
+    match command {
+        ConformanceCommand::Run { host } => run_conformance(host),
+    }
+}
+
+fn validate_plan(plan: Utf8PathBuf) -> Result<()> {
+    require_file(&plan)?;
+    let bytes = fs::read(&plan).with_context(|| format!("failed to read plan '{plan}'"))?;
+    let mut digest_path = plan.clone();
+    digest_path.set_extension("sha256.txt");
+
+    let expected_digest = read_digest(&digest_path)?;
+    let actual_digest = format!("{:x}", Sha256::digest(&bytes));
+
+    if expected_digest != actual_digest {
+        bail!(
+            "digest mismatch: expected {} but computed {} for {}",
+            expected_digest,
+            actual_digest,
+            plan
+        );
+    }
+
+    validate_plan_structure(&bytes)?;
+
+    println!("plan validated (sha256={})", actual_digest);
+    Ok(())
+}
+
+fn validate_plan_structure(bytes: &[u8]) -> Result<()> {
+    enforce_canonical_encoding(bytes)?;
+
+    let raw: CiborValue =
+        from_reader(Cursor::new(bytes)).context("failed to decode plan as CBOR value")?;
+    validate_canonical_value(&raw)?;
+
+    ensure_top_level_plan_map(&raw)?;
+
+    let doc: PlanDocument = serde_cbor::from_slice(bytes)
+        .context("failed to decode plan as canonical CBOR document")?;
+    let PlanDocument { plan } = doc;
+    let PlanRecord {
+        name,
+        version,
+        components,
+        metadata,
+    } = plan;
+
+    ensure!(!name.trim().is_empty(), "plan.name must not be empty");
+    ensure!(!version.trim().is_empty(), "plan.version must not be empty");
+
+    let mut component_ids = HashSet::new();
+    for (idx, component) in components.iter().enumerate() {
+        let map = match component {
+            SerdeValue::Map(map) => map,
+            _ => {
+                bail!("plan.components[{}] must be a map", idx);
+            }
+        };
+        let id_value = map
+            .get(&SerdeValue::Text("id".to_string()))
+            .ok_or_else(|| anyhow!("plan.components[{}] is missing an 'id' field", idx))?;
+        let id = match id_value {
+            SerdeValue::Text(text) if !text.trim().is_empty() => text.clone(),
+            _ => bail!("plan.components[{}].id must be a non-empty string", idx),
+        };
+        if !component_ids.insert(id) {
+            bail!("plan.components contains duplicate component ids");
+        }
+    }
+
+    let description = metadata
+        .get("description")
+        .ok_or_else(|| anyhow!("plan.metadata.description is required"))?;
+    match description {
+        SerdeValue::Text(text) if !text.trim().is_empty() => {}
+        _ => bail!("plan.metadata.description must be a non-empty string"),
+    }
+
+    for (key, value) in &metadata {
+        if let SerdeValue::Text(text) = value {
+            ensure!(
+                text.chars().all(|ch| !ch.is_control()),
+                "plan.metadata.{} must not contain control characters",
+                key
+            );
+        } else {
+            bail!("plan.metadata.{} must be a string", key);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanDocument {
+    plan: PlanRecord,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanRecord {
+    name: String,
+    version: String,
+    components: Vec<SerdeValue>,
+    metadata: BTreeMap<String, SerdeValue>,
+}
+
+fn enforce_canonical_encoding(bytes: &[u8]) -> Result<()> {
+    let mut cursor = 0usize;
+    scan_cbor_value(bytes, &mut cursor)?;
+    if cursor != bytes.len() {
+        bail!("plan includes trailing data beyond the root value");
+    }
+    Ok(())
+}
+
+fn scan_cbor_value(bytes: &[u8], cursor: &mut usize) -> Result<()> {
+    use std::str;
+
+    if *cursor >= bytes.len() {
+        bail!("unexpected end of CBOR stream");
+    }
+    let initial = bytes[*cursor];
+    let major = initial >> 5;
+    let addl = initial & 0b0001_1111;
+    *cursor += 1;
+
+    match major {
+        0 => {
+            read_canonical_uint(bytes, cursor, addl)?;
+        }
+        1 => {
+            let value = read_canonical_uint(bytes, cursor, addl)?;
+            if value == u64::MAX {
+                bail!("negative integer magnitude exceeds supported range");
+            }
+        }
+        2 | 3 => {
+            let len = usize::try_from(read_canonical_uint(bytes, cursor, addl)?)
+                .context("CBOR length exceeds supported size")?;
+            if *cursor + len > bytes.len() {
+                bail!("CBOR string overruns input length");
+            }
+            if major == 3 {
+                let slice = &bytes[*cursor..*cursor + len];
+                str::from_utf8(slice).context("text string is not valid UTF-8")?;
+            }
+            *cursor += len;
+        }
+        4 => {
+            let len = usize::try_from(read_canonical_uint(bytes, cursor, addl)?)
+                .context("CBOR length exceeds supported size")?;
+            for _ in 0..len {
+                scan_cbor_value(bytes, cursor)?;
+            }
+        }
+        5 => {
+            let len = usize::try_from(read_canonical_uint(bytes, cursor, addl)?)
+                .context("CBOR length exceeds supported size")?;
+            for _ in 0..len {
+                scan_cbor_value(bytes, cursor)?;
+                scan_cbor_value(bytes, cursor)?;
+            }
+        }
+        6 => {
+            bail!("CBOR tags are not permitted in plan documents");
+        }
+        7 => match addl {
+            20..=22 => {}
+            24 => bail!("non-minimal simple value encoding detected"),
+            25..=27 => bail!("floating point values are not permitted in plan documents"),
+            31 => bail!("indefinite-length item encountered"),
+            _ => bail!("simple value 0x{:x} is not permitted", addl),
+        },
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn read_canonical_uint(bytes: &[u8], cursor: &mut usize, addl: u8) -> Result<u64> {
+    let mut read_bytes = |count: usize| -> Result<u64> {
+        if *cursor + count > bytes.len() {
+            bail!("CBOR value overruns input length");
+        }
+        let mut acc: u64 = 0;
+        for &byte in &bytes[*cursor..*cursor + count] {
+            acc = (acc << 8) | u64::from(byte);
+        }
+        *cursor += count;
+        Ok(acc)
+    };
+
+    match addl {
+        v @ 0..=23 => Ok(v as u64),
+        24 => {
+            let value = read_bytes(1)?;
+            if value < 24 {
+                bail!("non-minimal integer encoding detected");
+            }
+            Ok(value)
+        }
+        25 => {
+            let value = read_bytes(2)?;
+            if value <= u8::MAX as u64 {
+                bail!("non-minimal integer encoding detected");
+            }
+            Ok(value)
+        }
+        26 => {
+            let value = read_bytes(4)?;
+            if value <= u16::MAX as u64 {
+                bail!("non-minimal integer encoding detected");
+            }
+            Ok(value)
+        }
+        27 => {
+            let value = read_bytes(8)?;
+            if value <= u32::MAX as u64 {
+                bail!("non-minimal integer encoding detected");
+            }
+            Ok(value)
+        }
+        31 => bail!("indefinite-length item encountered"),
+        _ => bail!("unsupported additional information value {addl}"),
+    }
+}
+
+fn ensure_top_level_plan_map(value: &CiborValue) -> Result<()> {
+    if let CiborValue::Map(entries) = value {
+        let first_key = entries
+            .first()
+            .map(|(key, _)| key)
+            .ok_or_else(|| anyhow!("plan document must contain a 'plan' key"))?;
+        match first_key {
+            CiborValue::Text(name) if name == "plan" => Ok(()),
+            _ => bail!("top-level CBOR map must begin with the 'plan' key"),
+        }
+    } else {
+        bail!("plan document must be encoded as a CBOR map");
+    }
+}
+
+fn validate_canonical_value(value: &CiborValue) -> Result<()> {
+    match value {
+        CiborValue::Map(entries) => {
+            let mut previous_key: Option<CanonicalValue> = None;
+            for (key, val) in entries.iter() {
+                if matches!(key, CiborValue::Tag(_, _)) {
+                    bail!("CBOR tags are not permitted in plan documents");
+                }
+                let current_key = CanonicalValue::from(key.clone());
+                if let Some(prev) = &previous_key {
+                    ensure!(
+                        prev < &current_key,
+                        "CBOR map keys must be sorted canonically"
+                    );
+                }
+                previous_key = Some(current_key);
+                validate_canonical_value(key)?;
+                validate_canonical_value(val)?;
+            }
+        }
+        CiborValue::Array(items) => {
+            for item in items {
+                validate_canonical_value(item)?;
+            }
+        }
+        CiborValue::Tag(_, _) => {
+            bail!("CBOR tags are not permitted in plan documents");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn read_digest(path: &Utf8PathBuf) -> Result<String> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("expected digest file '{}' to exist", path))?;
+    if let Some(token) = contents.split_whitespace().next() {
+        if token.len() == 64 && token.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(token.to_ascii_lowercase());
+        }
+    }
+    Err(anyhow!(
+        "digest file '{}' must contain a 64-character hex string",
+        path
+    ))
+}
+
+fn build_artifact(plan: Utf8PathBuf, output: Utf8PathBuf) -> Result<()> {
+    require_file(&plan)?;
+    if let Some(parent) = output.parent() {
+        if !parent.as_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("unable to create output directory '{parent}'"))?;
+        }
+    }
+    let mut file = fs::File::create(&output)
+        .with_context(|| format!("failed to create output artifact '{output}'"))?;
+    writeln!(file, "stub artifact generated from plan")?;
+    println!("artifact written to {}", output);
+    Ok(())
+}
+
+fn run_artifact(artifact: Utf8PathBuf) -> Result<()> {
+    require_file(&artifact)?;
+    println!("would execute artifact: {}", artifact);
+    Ok(())
+}
+
+fn serve_artifact(artifact: Utf8PathBuf, port: u16) -> Result<()> {
+    require_file(&artifact)?;
+    println!("would serve artifact {} on port {}", artifact, port);
+    Ok(())
+}
+
+fn run_conformance(host: String) -> Result<()> {
+    if host.trim().is_empty() {
+        bail!("host identifier must not be empty");
+    }
+    println!("would run conformance suite for host: {}", host);
+    Ok(())
+}
+
+fn require_file(path: &Utf8PathBuf) -> Result<()> {
+    fs::metadata(path).with_context(|| format!("required input '{}' does not exist", path))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_plan_structure_accepts_canonical_plan() {
+        let bytes = include_bytes!("../../../conformance/vectors/hello-plan.cbor");
+        validate_plan_structure(bytes).expect("expected canonical plan to validate");
+    }
+
+    #[test]
+    fn validate_plan_structure_accepts_nested_plan() {
+        let bytes = include_bytes!("../../../conformance/vectors/nested-plan.cbor");
+        validate_plan_structure(bytes).expect("expected nested canonical plan to validate");
+    }
+
+    #[test]
+    fn validate_plan_structure_accepts_large_int_plan() {
+        let bytes = include_bytes!("../../../conformance/vectors/large-int-plan.cbor");
+        validate_plan_structure(bytes).expect("expected large integer plan to validate");
+    }
+
+    #[test]
+    fn validate_plan_structure_accepts_multi_component_plan() {
+        let bytes = include_bytes!("../../../conformance/vectors/multi-component-plan.cbor");
+        validate_plan_structure(bytes).expect("expected multi-component plan to validate");
+    }
+
+    #[test]
+    fn validate_plan_structure_rejects_indefinite_map() {
+        let bytes = [0xbf, 0xff];
+        let err = validate_plan_structure(&bytes).expect_err("indefinite map should fail");
+        assert!(err.to_string().contains("indefinite"));
+    }
+
+    #[test]
+    fn validate_plan_structure_rejects_non_utf8_text() {
+        let bytes = [0x63, 0xff, 0xff, 0xff];
+        let err = validate_plan_structure(&bytes).expect_err("invalid UTF-8 should fail");
+        assert!(err.to_string().contains("UTF-8"));
+    }
+
+    #[test]
+    fn validate_plan_structure_rejects_disallowed_simple_value() {
+        let bytes = [0xe0];
+        let err = validate_plan_structure(&bytes).expect_err("disallowed simple value should fail");
+        assert!(err.to_string().contains("simple value"));
+    }
+
+    #[test]
+    fn validate_plan_structure_rejects_non_minimal_integer_encoding() {
+        let bytes = [0x18, 0x17];
+        let err = validate_plan_structure(&bytes).expect_err("non-minimal integer should fail");
+        assert!(err.to_string().contains("non-minimal integer"));
+    }
+
+    #[test]
+    fn validate_plan_structure_rejects_unsorted_map_keys() {
+        let bytes = [0xa2, 0x61, 0x62, 0xf4, 0x61, 0x61, 0xf5];
+        let err = validate_plan_structure(&bytes).expect_err("unsorted map keys should fail");
+        assert!(err.to_string().contains("sorted canonically"));
+    }
+    #[test]
+    fn validate_plan_structure_rejects_multi_component_unsorted_plan() {
+        let bytes =
+            include_bytes!("../../../conformance/vectors/multi-component-plan-unsorted.cbor");
+        let err =
+            validate_plan_structure(bytes).expect_err("unsorted multi-component plan should fail");
+        assert!(err.to_string().contains("sorted canonically"));
+    }
+
+    #[test]
+    fn validate_plan_structure_rejects_duplicate_component_ids() {
+        let bytes = include_bytes!("../../../conformance/vectors/duplicate-plan.cbor");
+        let err = validate_plan_structure(bytes).expect_err("duplicate component ids should fail");
+        assert!(err.to_string().contains("duplicate component ids"));
+    }
+}

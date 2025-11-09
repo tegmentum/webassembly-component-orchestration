@@ -1,0 +1,50 @@
+[
+  {
+    "name": "hello-plan",
+    "path": "/Users/zacharywhitley/git/webassembly-compoent-orchestration/conformance/vectors/hello-plan.cbor",
+    "expect_pass": true,
+    "actual_pass": true,
+    "stdout": "plan validated (sha256=8d564a4fd657d0a77e31912f3164d659e951aabb7ad9032de7296ce30e7d14ed)\n",
+    "stderr": ""
+  },
+  {
+    "name": "nested-plan",
+    "path": "/Users/zacharywhitley/git/webassembly-compoent-orchestration/conformance/vectors/nested-plan.cbor",
+    "expect_pass": true,
+    "actual_pass": true,
+    "stdout": "plan validated (sha256=e404f138326e09cfbc3e526e9efcfb5aa68e29241da3d984f81e61bf08980bd3)\n",
+    "stderr": ""
+  },
+  {
+    "name": "large-int-plan",
+    "path": "/Users/zacharywhitley/git/webassembly-compoent-orchestration/conformance/vectors/large-int-plan.cbor",
+    "expect_pass": true,
+    "actual_pass": true,
+    "stdout": "plan validated (sha256=16364fc85edef7685951486be7f55a0ab6cff5f3bd75ecf9070ebf43f4c86d3f)\n",
+    "stderr": ""
+  },
+  {
+    "name": "multi-component-plan",
+    "path": "/Users/zacharywhitley/git/webassembly-compoent-orchestration/conformance/vectors/multi-component-plan.cbor",
+    "expect_pass": true,
+    "actual_pass": true,
+    "stdout": "plan validated (sha256=490bb97b90979ef83e979a980b6899120ef446af4569db69dc30653d407612b3)\n",
+    "stderr": ""
+  },
+  {
+    "name": "multi-component-plan-unsorted",
+    "path": "/Users/zacharywhitley/git/webassembly-compoent-orchestration/conformance/vectors/multi-component-plan-unsorted.cbor",
+    "expect_pass": false,
+    "actual_pass": false,
+    "stdout": "",
+    "stderr": "Error: CBOR map keys must be sorted canonically\n"
+  },
+  {
+    "name": "duplicate-plan",
+    "path": "/Users/zacharywhitley/git/webassembly-compoent-orchestration/conformance/vectors/duplicate-plan.cbor",
+    "expect_pass": false,
+    "actual_pass": false,
+    "stdout": "",
+    "stderr": "Error: plan.components contains duplicate component ids\n"
+  }
+]

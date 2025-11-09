@@ -1,0 +1,8 @@
+[
+  { "name": "hello-plan", "path": "conformance/vectors/hello-plan.cbor", "expect_pass": true },
+  { "name": "nested-plan", "path": "conformance/vectors/nested-plan.cbor", "expect_pass": true },
+  { "name": "large-int-plan", "path": "conformance/vectors/large-int-plan.cbor", "expect_pass": true },
+  { "name": "multi-component-plan", "path": "conformance/vectors/multi-component-plan.cbor", "expect_pass": true },
+  { "name": "multi-component-plan-unsorted", "path": "conformance/vectors/multi-component-plan-unsorted.cbor", "expect_pass": false },
+  { "name": "duplicate-plan", "path": "conformance/vectors/duplicate-plan.cbor", "expect_pass": false }
+]

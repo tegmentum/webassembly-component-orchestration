@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust-checks:
+    name: Rust fmt + clippy + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect Cargo workspaces
+        id: cargo
+        run: |
+          if git ls-files --error-unmatch "Cargo.toml" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install nightly toolchain
+        if: steps.cargo.outputs.found == 'true'
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - name: cargo fmt --check
+        if: steps.cargo.outputs.found == 'true'
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        if: steps.cargo.outputs.found == 'true'
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo test
+        if: steps.cargo.outputs.found == 'true'
+        run: cargo test --all
+      - name: Install wasm-tools
+        run: cargo install wasm-tools
+      - name: Build placeholder component
+        run: ./scripts/build-placeholder.sh
+
+  composectl-validation:
+    name: composectl plan validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect composectl manifest
+        id: ctl
+        run: |
+          if git ls-files --error-unmatch "tools/composectl/Cargo.toml" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install nightly toolchain
+        if: steps.ctl.outputs.found == 'true'
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Build composectl
+        if: steps.ctl.outputs.found == 'true'
+        working-directory: tools/composectl
+        run: cargo build --release
+      - name: Smoke test composectl plan validation
+        if: steps.ctl.outputs.found == 'true'
+        working-directory: tools/composectl
+        run: |
+          if ls ../../conformance/vectors/*.cbor >/dev/null 2>&1; then
+            for plan in ../../conformance/vectors/*.cbor; do
+              ./target/release/composectl plan validate "$plan"
+            done
+          else
+            echo "No canonical vectors yet; skipping"
+          fi
+      - name: Run conformance runner summary
+        if: steps.ctl.outputs.found == 'true'
+        run: |
+          mkdir -p artifacts
+          cargo run -p conformance-runner -- run --json artifacts/conformance-summary.json
+        env:
+          CARGO_BIN_EXE_composectl: ${{ github.workspace }}/tools/composectl/target/release/composectl
+      - name: Upload conformance summary
+        if: steps.ctl.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-summary
+          path: artifacts/conformance-summary.json

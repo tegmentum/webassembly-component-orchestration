@@ -1,0 +1,88 @@
+package std:metrics@1.0.0;
+
+/// Standard metrics collection interface
+///
+/// Provides runtime metrics for composition and execution operations.
+/// Metrics are collected locally and can optionally be exported remotely.
+
+interface metrics {
+    /// Metric type
+    enum metric-type {
+        counter,
+        gauge,
+        histogram,
+        timer,
+    }
+
+    /// Metric value
+    variant metric-value {
+        counter(u64),
+        gauge(f64),
+        histogram(list<f64>),
+        duration-ms(u64),
+    }
+
+    /// Metric label (key-value pair)
+    record metric-label {
+        key: string,
+        value: string,
+    }
+
+    /// Metric record
+    record metric {
+        /// Metric name (e.g., "compose.duration", "exec.memory_bytes")
+        name: string,
+        /// Metric type
+        metric-type: metric-type,
+        /// Metric value
+        value: metric-value,
+        /// Optional labels for dimension filtering
+        labels: list<metric-label>,
+        /// Timestamp in milliseconds since epoch
+        timestamp: u64,
+    }
+
+    /// Metric aggregation period
+    enum aggregation-period {
+        minute,
+        hour,
+        day,
+    }
+
+    /// Aggregated metric summary
+    record metric-summary {
+        name: string,
+        count: u64,
+        sum: f64,
+        min: f64,
+        max: f64,
+        avg: f64,
+        period: aggregation-period,
+    }
+
+    /// Record a metric
+    record-metric: func(metric: metric);
+
+    /// Get all recorded metrics
+    list-metrics: func(
+        name-filter: option<string>,
+        labels-filter: option<list<metric-label>>,
+        since: option<u64>
+    ) -> list<metric>;
+
+    /// Get metric summary
+    get-summary: func(
+        name: string,
+        period: aggregation-period,
+        since: option<u64>
+    ) -> option<metric-summary>;
+
+    /// Export metrics to remote endpoint (optional)
+    export-metrics: func(
+        endpoint: string,
+        format: string
+    ) -> result<_, string>;
+
+    /// Clear metrics older than timestamp
+    clear-old-metrics: func(before: u64);
+}

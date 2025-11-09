@@ -1,0 +1,7 @@
+package example:hello-http@0.1.0;
+
+/// Simple HTTP server world for demonstration
+world hello-http-server {
+    // Export HTTP handler interface
+    export wasi:http/incoming-handler@0.2.1;
+}

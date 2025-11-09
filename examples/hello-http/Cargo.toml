@@ -1,0 +1,16 @@
+[package]
+name = "hello-http"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.33"
+
+[package.metadata.component]
+package = "example:hello-http"
+
+[package.metadata.component.target]
+world = "hello-http-server"

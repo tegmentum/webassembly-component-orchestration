@@ -1,0 +1,12 @@
+[package]
+name = "hello-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+
+[profile.release]
+opt-level = "s"  # Optimize for size
+lto = true
+strip = true

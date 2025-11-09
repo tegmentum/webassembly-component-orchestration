@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "hosts/wasmtime",
+    "tools/composectl",
+    "conformance/runner",
+    "examples/hello-cli",
+    "examples/hello-http",
+]
+resolver = "2"

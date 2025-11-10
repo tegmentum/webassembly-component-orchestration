@@ -3,10 +3,25 @@
 use super::*;
 
 #[cfg(feature = "pkcs11")]
-use pkcs11_host_adapter::{AdapterContext, bindings::pkcs11::core::core::ErrorCode as Pkcs11ErrorCode};
+use pkcs11_host_adapter::{
+    AdapterContext,
+    bindings::pkcs11::core::core::{
+        Attribute as WitAttribute,
+        AttributeValue,
+        ErrorCode as Pkcs11ErrorCode,
+        SessionFlags as WitSessionFlags,
+        UserType,
+    },
+};
 
 #[cfg(feature = "pkcs11")]
 use std::sync::Arc;
+
+// PKCS#11 attribute tags
+#[cfg(feature = "pkcs11")]
+const CKA_LABEL: u32 = 0x0000_0003;
+#[cfg(feature = "pkcs11")]
+const CKA_VALUE: u32 = 0x0000_0011;
 
 /// PKCS#11 backend configuration
 pub struct Pkcs11Config {
@@ -67,39 +82,75 @@ impl SecretBackend for Pkcs11Backend {
     fn resolve(&self, id: &SecretId) -> Result<Vec<u8>, SecretError> {
         #[cfg(feature = "pkcs11")]
         {
-            // For secret resolution, we would:
-            // 1. Open a session on the slot
-            // 2. Login with the PIN if provided
-            // 3. Find the object by label (using the secret ID)
-            // 4. Retrieve the CKA_VALUE attribute
-
-            // The WIT adapter provides high-level interfaces through:
-            // - session management (session interface)
-            // - object operations (object interface)
-
-            // For now, return a descriptive error indicating this requires
-            // session and object manipulation through the WIT interfaces
             tracing::info!(
                 secret_id = %id,
                 slot = self.config.slot_id,
                 "Resolving secret via PKCS#11 WIT adapter"
             );
 
-            // Get slot info to verify the slot exists
+            // Verify the slot exists
             self.context
                 .slot_info(self.config.slot_id)
                 .map_err(Self::map_pkcs11_error)?;
 
-            // TODO: Implement full secret retrieval using session and object interfaces
-            // This requires:
-            // - Creating a session resource
-            // - Logging in with the PIN
-            // - Searching for objects with the label matching the secret ID
-            // - Reading the CKA_VALUE attribute
+            // Open a read-only session
+            let session_flags = WitSessionFlags::SERIAL_SESSION;
+            let session_handle = self.context
+                .open_session(self.config.slot_id, session_flags)
+                .map_err(Self::map_pkcs11_error)?;
 
-            Err(SecretError::BackendError(
-                "Full secret retrieval not yet implemented - requires session and object manipulation through WIT".to_string(),
-            ))
+            // Login if PIN is provided
+            if let Some(ref pin) = self.config.pin {
+                self.context
+                    .login(session_handle, UserType::User, pin.as_bytes())
+                    .map_err(Self::map_pkcs11_error)?;
+            }
+
+            // Search for object with matching label
+            let template = vec![WitAttribute {
+                tag: CKA_LABEL,
+                value: AttributeValue::ByteString(id.as_bytes().to_vec()),
+            }];
+
+            self.context
+                .find_objects_init(session_handle, &template)
+                .map_err(Self::map_pkcs11_error)?;
+
+            let objects = self.context
+                .find_objects(session_handle, 1)
+                .map_err(Self::map_pkcs11_error)?;
+
+            self.context
+                .find_objects_final(session_handle)
+                .map_err(Self::map_pkcs11_error)?;
+
+            if objects.is_empty() {
+                self.context.close_session(session_handle).ok();
+                return Err(SecretError::NotFound);
+            }
+
+            // Get the CKA_VALUE attribute from the first matching object
+            let object_handle = objects[0];
+            let attributes = self.context
+                .get_attributes(session_handle, object_handle, &[CKA_VALUE])
+                .map_err(Self::map_pkcs11_error)?;
+
+            // Close the session
+            self.context.close_session(session_handle).ok();
+
+            // Extract the value bytes
+            if let Some(attr) = attributes.first() {
+                match &attr.value {
+                    AttributeValue::ByteString(bytes) => Ok(bytes.clone()),
+                    _ => Err(SecretError::BackendError(
+                        "CKA_VALUE attribute is not a byte string".to_string(),
+                    )),
+                }
+            } else {
+                Err(SecretError::BackendError(
+                    "Object does not have CKA_VALUE attribute".to_string(),
+                ))
+            }
         }
 
         #[cfg(not(feature = "pkcs11"))]
@@ -157,24 +208,71 @@ impl SecretBackend for Pkcs11Backend {
     fn list_secrets(&self) -> Result<Vec<SecretId>, SecretError> {
         #[cfg(feature = "pkcs11")]
         {
+            tracing::info!(
+                slot = self.config.slot_id,
+                "Listing secrets via PKCS#11 WIT adapter"
+            );
+
             // Verify the slot exists
             self.context
                 .slot_info(self.config.slot_id)
                 .map_err(Self::map_pkcs11_error)?;
 
-            // TODO: Implement object enumeration using the object interface
-            // This requires:
-            // - Opening a session
-            // - Logging in with the PIN
-            // - Finding all objects
-            // - Extracting their labels as secret IDs
+            // Open a read-only session
+            let session_flags = WitSessionFlags::SERIAL_SESSION;
+            let session_handle = self.context
+                .open_session(self.config.slot_id, session_flags)
+                .map_err(Self::map_pkcs11_error)?;
 
-            tracing::info!(
-                slot = self.config.slot_id,
-                "Listing secrets would enumerate PKCS#11 objects via WIT adapter"
-            );
+            // Login if PIN is provided
+            if let Some(ref pin) = self.config.pin {
+                self.context
+                    .login(session_handle, UserType::User, pin.as_bytes())
+                    .map_err(Self::map_pkcs11_error)?;
+            }
 
-            Ok(Vec::new())
+            // Find all objects (empty template matches all)
+            let template = vec![];
+            self.context
+                .find_objects_init(session_handle, &template)
+                .map_err(Self::map_pkcs11_error)?;
+
+            let mut secret_ids = Vec::new();
+
+            // Fetch objects in batches of 20
+            loop {
+                let objects = self.context
+                    .find_objects(session_handle, 20)
+                    .map_err(Self::map_pkcs11_error)?;
+
+                if objects.is_empty() {
+                    break;
+                }
+
+                // Get label attribute for each object
+                for object_handle in objects {
+                    if let Ok(attributes) = self.context
+                        .get_attributes(session_handle, object_handle, &[CKA_LABEL])
+                    {
+                        if let Some(attr) = attributes.first() {
+                            if let AttributeValue::ByteString(bytes) = &attr.value {
+                                if let Ok(label) = String::from_utf8(bytes.clone()) {
+                                    secret_ids.push(label);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            self.context
+                .find_objects_final(session_handle)
+                .map_err(Self::map_pkcs11_error)?;
+
+            // Close the session
+            self.context.close_session(session_handle).ok();
+
+            Ok(secret_ids)
         }
 
         #[cfg(not(feature = "pkcs11"))]
@@ -234,7 +332,21 @@ mod tests {
             pin: Some("1234".to_string()),
         };
 
-        let backend = Pkcs11Backend::new(config).unwrap();
-        assert_eq!(backend.scheme(), "pkcs11");
+        #[cfg(not(feature = "pkcs11"))]
+        {
+            let backend = Pkcs11Backend::new(config).unwrap();
+            assert_eq!(backend.scheme(), "pkcs11");
+        }
+
+        #[cfg(feature = "pkcs11")]
+        {
+            // Only test if SoftHSM is actually installed
+            if std::path::Path::new("/usr/lib/softhsm/libsofthsm2.so").exists()
+                || std::path::Path::new("/opt/homebrew/lib/softhsm/libsofthsm2.so").exists() {
+                if let Ok(backend) = Pkcs11Backend::new(config) {
+                    assert_eq!(backend.scheme(), "pkcs11");
+                }
+            }
+        }
     }
 }

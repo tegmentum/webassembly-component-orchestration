@@ -720,6 +720,7 @@ fn attribute_value_to_bytes(value: &AttributeValue) -> Result<Vec<u8>, ErrorCode
 const CKA_CLASS: u32 = 0x0000_0000;
 const CKA_TOKEN: u32 = 0x0000_0001;
 const CKA_PRIVATE: u32 = 0x0000_0002;
+const CKA_LABEL: u32 = 0x0000_0003;
 const CKA_TRUSTED: u32 = 0x0000_0086;
 const CKA_MODULUS_BITS: u32 = 0x0000_0121;
 const CKA_KEY_TYPE: u32 = 0x0000_0100;

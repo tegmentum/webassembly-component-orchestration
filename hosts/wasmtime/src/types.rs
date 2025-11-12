@@ -182,6 +182,8 @@ pub struct ComponentSpec {
 /// Import binding specification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportBinding {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumer_id: Option<ComponentId>,
     pub import_name: String,
     pub provider_id: ComponentId,
     pub export_name: String,

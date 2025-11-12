@@ -205,13 +205,16 @@ impl PlanValidator {
         rec_stack.insert(node.to_string());
 
         // Find all dependencies of this node
+        // Only consider bindings where this node is the consumer
         let deps: Vec<_> = bindings
             .iter()
             .filter_map(|b| {
                 // Find bindings where this component imports from others
-                // Note: This is simplified - in reality we'd need to track which
-                // component each binding belongs to
-                Some(b.provider_id.as_str())
+                if b.consumer_id.as_deref() == Some(node) {
+                    Some(b.provider_id.as_str())
+                } else {
+                    None
+                }
             })
             .collect();
 

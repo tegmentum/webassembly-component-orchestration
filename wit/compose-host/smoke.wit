@@ -1,0 +1,11 @@
+package compose:host@0.1.0;
+
+/// Smoke-test interface used only by the wasm-orchestrator proof of
+/// concept. NOT part of the stable host surface. Will be removed once
+/// the orchestrator exports real `sys:compose` interfaces.
+interface smoke {
+    /// Call into `runtime-info.get-fingerprint` and return the
+    /// host's reported runtime name. Used to verify import wiring
+    /// from a wasm guest to a native host.
+    host-name: func() -> string;
+}

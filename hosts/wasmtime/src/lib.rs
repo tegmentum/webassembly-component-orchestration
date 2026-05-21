@@ -5,6 +5,7 @@
 //! [`compose_core`] crate. This crate adds the wasmtime-specific runtime
 //! glue — engine setup, component instantiation via `exec` — plus the
 //! pkcs11 secret backend, which depends on the wasmtime-backed adapter.
+pub mod compose_host;
 pub mod exec;
 #[cfg(feature = "pkcs11")]
 pub mod pkcs11_backend;

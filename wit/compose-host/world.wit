@@ -54,4 +54,7 @@ world orchestrator {
     import runner;
     import invoker;
     import runtime-info;
+    // `smoke` is a test-only export that will be removed once real
+    // sys:compose interfaces ship; see smoke.wit.
+    export smoke;
 }

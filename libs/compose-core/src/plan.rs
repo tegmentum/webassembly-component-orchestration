@@ -3,6 +3,39 @@ use crate::blobs::{compute_digest, BlobStore};
 use crate::types::{Digest, Error, ErrorCode, PlanV1};
 use std::collections::{HashMap, HashSet};
 
+/// Serialize a plan to canonical CBOR bytes.
+///
+/// Pure function — no I/O, no blob store needed. Exposed at module
+/// level so callers (including the wasm orchestrator) can use it
+/// without constructing a [`PlanValidator`].
+pub fn serialize(plan: &PlanV1) -> Result<Vec<u8>, Error> {
+    let mut buffer = Vec::new();
+    ciborium::into_writer(plan, &mut buffer).map_err(|e| {
+        Error::new(
+            ErrorCode::PlanInvalidCbor,
+            format!("failed to serialize plan: {}", e),
+        )
+    })?;
+    Ok(buffer)
+}
+
+/// Deserialize a plan from canonical CBOR bytes. Pure function.
+pub fn deserialize(bytes: &[u8]) -> Result<PlanV1, Error> {
+    ciborium::from_reader(bytes).map_err(|e| {
+        Error::new(
+            ErrorCode::PlanInvalidCbor,
+            format!("failed to deserialize plan: {}", e),
+        )
+    })
+}
+
+/// Compute the canonical digest of a plan: SHA-256 of its canonical
+/// CBOR encoding. Pure function.
+pub fn compute_plan_digest(plan: &PlanV1) -> Result<Digest, Error> {
+    let bytes = serialize(plan)?;
+    Ok(compute_digest(&bytes))
+}
+
 /// Plan validator with incremental validation pipeline
 pub struct PlanValidator {
     blobs: BlobStore,
@@ -16,24 +49,12 @@ impl PlanValidator {
 
     /// Serialize a plan to canonical CBOR bytes
     pub fn serialize(&self, plan: &PlanV1) -> Result<Vec<u8>, Error> {
-        let mut buffer = Vec::new();
-        ciborium::into_writer(plan, &mut buffer).map_err(|e| {
-            Error::new(
-                ErrorCode::PlanInvalidCbor,
-                format!("failed to serialize plan: {}", e),
-            )
-        })?;
-        Ok(buffer)
+        serialize(plan)
     }
 
     /// Deserialize a plan from canonical CBOR bytes
     pub fn deserialize(&self, bytes: &[u8]) -> Result<PlanV1, Error> {
-        ciborium::from_reader(bytes).map_err(|e| {
-            Error::new(
-                ErrorCode::PlanInvalidCbor,
-                format!("failed to deserialize plan: {}", e),
-            )
-        })
+        deserialize(bytes)
     }
 
     /// Validate a plan structure and graph
@@ -55,8 +76,7 @@ impl PlanValidator {
 
     /// Compute the canonical digest of a plan
     pub fn compute_digest(&self, plan: &PlanV1) -> Result<Digest, Error> {
-        let bytes = self.serialize(plan)?;
-        Ok(compute_digest(&bytes))
+        compute_plan_digest(plan)
     }
 
     /// Phase 1: Validate schema and basic structure

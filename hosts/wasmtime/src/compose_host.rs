@@ -46,7 +46,7 @@ use compose::host::runtime_info::Host as RuntimeInfoHost;
 use compose::host::runtime_info::Fingerprint;
 
 /// Host-side state shared with every guest call.
-struct HostState {
+pub struct HostState {
     wasi_ctx: WasiCtx,
     wasi_table: ResourceTable,
     runtime_name: String,
@@ -62,6 +62,12 @@ impl WasiView for HostState {
         }
     }
 }
+
+// sys:compose/types is referenced by the plan export's signatures.
+// It declares only data records (no functions), so the Host trait is
+// empty — but it must be implemented for the orchestrator world to
+// link.
+impl sys::compose::types::Host for HostState {}
 
 impl RuntimeInfoHost for HostState {
     fn get_fingerprint(&mut self) -> Fingerprint {
@@ -213,6 +219,79 @@ pub fn run_digest(engine: &Engine, orchestrator_wasm: &[u8], bytes: &[u8]) -> Re
         .compose_host_smoke()
         .call_digest(&mut store, bytes)
         .ctx("orchestrator smoke.digest call failed")
+}
+
+/// Construct a minimal `sys:compose/plan.plan-v1` value that's valid
+/// enough for serialize / compute-digest to round-trip through. The
+/// fields are deliberately ordinary — what's being tested is the WIT
+/// boundary, not the plan validator's business rules.
+pub fn sample_plan() -> exports::sys::compose::plan::PlanV1 {
+    use exports::sys::compose::plan as p;
+    use sys::compose::types as t;
+    p::PlanV1 {
+        version: "1".to_string(),
+        root: "root".to_string(),
+        components: vec![p::ComponentSpec {
+            id: "root".to_string(),
+            digest: vec![0u8; 32],
+            source: None,
+        }],
+        bindings: vec![],
+        secrets: vec![],
+        policy: t::Policy {
+            determinism: t::DeterminismMode::Strict,
+            capabilities: vec![],
+            tenant: None,
+            limits: t::ResourceLimits {
+                cpu_ms: None,
+                memory_bytes: None,
+                io_ops: None,
+            },
+        },
+    }
+}
+
+/// Load an orchestrator component and call its `sys:compose/plan.compute-digest`
+/// export against the given plan. The plan crosses the WIT boundary as
+/// a structured record; the orchestrator wasm converts it to a
+/// compose-core PlanV1, serializes to canonical CBOR, hashes, and
+/// returns the 32-byte digest.
+pub fn run_plan_compute_digest(
+    engine: &Engine,
+    orchestrator_wasm: &[u8],
+    plan: exports::sys::compose::plan::PlanV1,
+) -> Result<Vec<u8>> {
+    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm)?;
+    let outcome = orchestrator
+        .sys_compose_plan()
+        .call_compute_digest(&mut store, &plan)
+        .ctx("plan.compute-digest call failed")?;
+    outcome.map_err(|e| anyhow::anyhow!("plan.compute-digest returned error: {e:?}"))
+}
+
+/// Round-trip a plan through `sys:compose/plan.serialize` and
+/// `sys:compose/plan.deserialize`. Returns the deserialized plan,
+/// which the caller can compare against the original to check
+/// that the WIT boundary preserves every field.
+pub fn run_plan_roundtrip(
+    engine: &Engine,
+    orchestrator_wasm: &[u8],
+    plan: exports::sys::compose::plan::PlanV1,
+) -> Result<exports::sys::compose::plan::PlanV1> {
+    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm)?;
+    let plan_iface = orchestrator.sys_compose_plan();
+
+    let bytes = plan_iface
+        .call_serialize(&mut store, &plan)
+        .ctx("plan.serialize call failed")?
+        .map_err(|e| anyhow::anyhow!("plan.serialize returned error: {e:?}"))?;
+
+    let plan_iface = orchestrator.sys_compose_plan();
+    let restored = plan_iface
+        .call_deserialize(&mut store, &bytes)
+        .ctx("plan.deserialize call failed")?
+        .map_err(|e| anyhow::anyhow!("plan.deserialize returned error: {e:?}"))?;
+    Ok(restored)
 }
 
 /// Convenience for the bindgen-generated `add_to_linker` signature

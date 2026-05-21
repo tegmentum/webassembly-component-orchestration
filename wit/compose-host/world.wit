@@ -54,7 +54,14 @@ world orchestrator {
     import runner;
     import invoker;
     import runtime-info;
-    // `smoke` is a test-only export that will be removed once real
-    // sys:compose interfaces ship; see smoke.wit.
+    // `smoke` is a test-only export that will be removed once the
+    // full sys:compose surface ships; see smoke.wit.
     export smoke;
+
+    // First real export. plan covers (de)serialization + canonical
+    // digest computation, which are pure-functional and need no
+    // host capabilities beyond standard WASI. Other sys:compose
+    // interfaces (emit, exec, blobs, trust, events) follow once
+    // they have host capabilities lined up.
+    export sys:compose/plan@1.0.0;
 }

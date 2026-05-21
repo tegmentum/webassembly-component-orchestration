@@ -55,4 +55,11 @@ world orchestrator {
     import invoker;
     import runtime-info;
     export smoke;
+
+    // First real sys:compose export. Plan (de)serialization +
+    // digest computation, backed by compose_core::plan and
+    // compose_core::blobs::compute_digest. validate() is in
+    // scope but requires a blob store, so we'll add it once
+    // wasi:filesystem preopens are in the picture.
+    export sys:compose/plan@1.0.0;
 }

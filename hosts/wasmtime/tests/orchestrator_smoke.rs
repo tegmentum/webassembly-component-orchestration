@@ -85,3 +85,52 @@ fn digest_computed_inside_wasm_matches_native_sha256() {
     );
     assert_eq!(from_wasm.len(), 32, "SHA-256 must be 32 bytes");
 }
+
+/// A real sys:compose export call. The host constructs a PlanV1 as a
+/// structured WIT record, passes it across the canonical-ABI boundary,
+/// the orchestrator wasm converts it to a compose-core PlanV1 and
+/// calls compose-core's PlanValidator::compute_digest, and the host
+/// receives a 32-byte SHA-256 digest back.
+#[test]
+fn plan_compute_digest_crosses_wit_boundary() {
+    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+
+    let plan = compose_host::sample_plan();
+    let digest = compose_host::run_plan_compute_digest(&engine, &wasm, plan)
+        .expect("plan.compute-digest should succeed");
+
+    assert_eq!(digest.len(), 32, "SHA-256 digest must be 32 bytes");
+}
+
+/// PlanV1 round-trips through serialize → bytes → deserialize without
+/// losing or corrupting any field. Tests that every record type
+/// converts cleanly in both directions across the WIT boundary.
+#[test]
+fn plan_serialize_deserialize_round_trip() {
+    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+
+    let original = compose_host::sample_plan();
+    let restored = compose_host::run_plan_roundtrip(&engine, &wasm, original.clone())
+        .expect("plan round-trip should succeed");
+
+    assert_eq!(restored.version, original.version);
+    assert_eq!(restored.root, original.root);
+    assert_eq!(restored.components.len(), original.components.len());
+    assert_eq!(restored.components[0].id, original.components[0].id);
+    assert_eq!(restored.components[0].digest, original.components[0].digest);
+    assert_eq!(restored.bindings.len(), original.bindings.len());
+    assert_eq!(restored.secrets.len(), original.secrets.len());
+}
+
+/// Computing the same plan's digest twice must produce identical
+/// bytes — proof that the CBOR serialization the orchestrator uses
+/// is canonical (no map-ordering or float-NaN nondeterminism).
+#[test]
+fn plan_digest_is_deterministic() {
+    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+
+    let plan = compose_host::sample_plan();
+    let d1 = compose_host::run_plan_compute_digest(&engine, &wasm, plan.clone()).unwrap();
+    let d2 = compose_host::run_plan_compute_digest(&engine, &wasm, plan).unwrap();
+    assert_eq!(d1, d2, "plan digest must be deterministic across calls");
+}

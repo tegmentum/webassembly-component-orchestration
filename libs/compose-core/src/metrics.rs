@@ -1,4 +1,5 @@
 /// Metrics collection and aggregation
+use crate::host::{SharedClock, SystemClock};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
@@ -64,14 +65,20 @@ pub struct MetricSummary {
 #[derive(Clone)]
 pub struct MetricsCollector {
     metrics: Arc<Mutex<Vec<Metric>>>,
+    clock: SharedClock,
 }
 
 impl MetricsCollector {
-    /// Create a new metrics collector
-    pub fn new() -> Self {
+    /// Create a new metrics collector backed by the given clock.
+    pub fn new(clock: SharedClock) -> Self {
         Self {
             metrics: Arc::new(Mutex::new(Vec::new())),
+            clock,
         }
+    }
+
+    fn now(&self) -> u64 {
+        self.clock.now_unix_millis()
     }
 
     /// Record a metric
@@ -82,34 +89,37 @@ impl MetricsCollector {
 
     /// Record a counter metric
     pub fn counter(&self, name: impl Into<String>, value: u64, labels: Vec<MetricLabel>) {
+        let timestamp = self.now();
         self.record(Metric {
             name: name.into(),
             metric_type: MetricType::Counter,
             value: MetricValue::Counter { value },
             labels,
-            timestamp: current_timestamp(),
+            timestamp,
         });
     }
 
     /// Record a gauge metric
     pub fn gauge(&self, name: impl Into<String>, value: f64, labels: Vec<MetricLabel>) {
+        let timestamp = self.now();
         self.record(Metric {
             name: name.into(),
             metric_type: MetricType::Gauge,
             value: MetricValue::Gauge { value },
             labels,
-            timestamp: current_timestamp(),
+            timestamp,
         });
     }
 
     /// Record a timer metric (duration in milliseconds)
     pub fn timer(&self, name: impl Into<String>, duration_ms: u64, labels: Vec<MetricLabel>) {
+        let timestamp = self.now();
         self.record(Metric {
             name: name.into(),
             metric_type: MetricType::Timer,
             value: MetricValue::DurationMs { value: duration_ms },
             labels,
-            timestamp: current_timestamp(),
+            timestamp,
         });
     }
 
@@ -206,24 +216,18 @@ impl MetricsCollector {
 
 impl Default for MetricsCollector {
     fn default() -> Self {
-        Self::new()
+        Self::new(SystemClock::shared())
     }
-}
-
-fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::Clock;
 
     #[test]
     fn test_counter_metric() {
-        let collector = MetricsCollector::new();
+        let collector = MetricsCollector::default();
 
         collector.counter("test.counter", 42, vec![]);
 
@@ -238,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_gauge_metric() {
-        let collector = MetricsCollector::new();
+        let collector = MetricsCollector::default();
 
         collector.gauge("test.gauge", 3.14, vec![]);
 
@@ -252,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_timer_metric() {
-        let collector = MetricsCollector::new();
+        let collector = MetricsCollector::default();
 
         collector.timer("test.timer", 1500, vec![]);
 
@@ -266,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_metric_filtering() {
-        let collector = MetricsCollector::new();
+        let collector = MetricsCollector::default();
 
         collector.counter("foo.count", 1, vec![]);
         collector.counter("bar.count", 2, vec![]);
@@ -281,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_metric_summary() {
-        let collector = MetricsCollector::new();
+        let collector = MetricsCollector::default();
 
         collector.counter("test.stat", 10, vec![]);
         collector.counter("test.stat", 20, vec![]);
@@ -297,13 +301,13 @@ mod tests {
 
     #[test]
     fn test_clear_old_metrics() {
-        let collector = MetricsCollector::new();
+        let collector = MetricsCollector::default();
 
         collector.counter("test", 1, vec![]);
         assert_eq!(collector.count(), 1);
 
         // Clear all metrics before now + 1 second
-        let future = current_timestamp() + 1000;
+        let future = SystemClock.now_unix_millis() + 1000;
         collector.clear_old(future);
         assert_eq!(collector.count(), 0);
     }

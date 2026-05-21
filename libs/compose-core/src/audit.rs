@@ -1,4 +1,5 @@
 /// Audit logging with tenant isolation
+use crate::host::{SharedClock, SystemClock};
 use crate::types::{Digest, TenantId};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
@@ -28,13 +29,18 @@ pub struct AuditRecord {
 #[derive(Clone)]
 pub struct AuditLogger {
     log_dir: PathBuf,
+    clock: SharedClock,
 }
 
 impl AuditLogger {
-    /// Create a new audit logger
-    pub fn new(log_dir: PathBuf) -> anyhow::Result<Self> {
+    /// Create a new audit logger backed by the given clock.
+    pub fn new(log_dir: PathBuf, clock: SharedClock) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&log_dir)?;
-        Ok(Self { log_dir })
+        Ok(Self { log_dir, clock })
+    }
+
+    fn now(&self) -> u64 {
+        self.clock.now_unix_millis()
     }
 
     /// Log an audit record
@@ -77,7 +83,7 @@ impl AuditLogger {
         outcome: &str,
     ) -> anyhow::Result<()> {
         self.log(AuditRecord {
-            timestamp: current_timestamp(),
+            timestamp: self.now(),
             operation: "emit".to_string(),
             plan_digest: hex::encode(plan_digest),
             cache_key: hex::encode(emit_key),
@@ -99,7 +105,7 @@ impl AuditLogger {
         let context = exit_code.map(|code| format!("exit_code={}", code));
 
         self.log(AuditRecord {
-            timestamp: current_timestamp(),
+            timestamp: self.now(),
             operation: "exec".to_string(),
             plan_digest: hex::encode(plan_digest),
             cache_key: hex::encode(exec_key),
@@ -110,13 +116,6 @@ impl AuditLogger {
     }
 }
 
-fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,7 +124,7 @@ mod tests {
     #[test]
     fn test_audit_logging() {
         let dir = tempdir().unwrap();
-        let logger = AuditLogger::new(dir.path().to_path_buf()).unwrap();
+        let logger = AuditLogger::new(dir.path().to_path_buf(), SystemClock::shared()).unwrap();
 
         let digest = vec![0u8; 32];
         logger
@@ -147,7 +146,7 @@ mod tests {
     #[test]
     fn test_tenant_isolation() {
         let dir = tempdir().unwrap();
-        let logger = AuditLogger::new(dir.path().to_path_buf()).unwrap();
+        let logger = AuditLogger::new(dir.path().to_path_buf(), SystemClock::shared()).unwrap();
 
         let digest = vec![0u8; 32];
         logger

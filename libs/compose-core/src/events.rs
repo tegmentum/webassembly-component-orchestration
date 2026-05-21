@@ -1,20 +1,26 @@
 /// Event collection and emission
+use crate::host::{SharedClock, SystemClock};
 use crate::types::{Event, EventLevel};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Event collector that captures all emitted events
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EventCollector {
     events: Arc<Mutex<Vec<Event>>>,
+    clock: SharedClock,
 }
 
 impl EventCollector {
-    /// Create a new event collector
-    pub fn new() -> Self {
+    /// Create a new event collector backed by the given clock.
+    pub fn new(clock: SharedClock) -> Self {
         Self {
             events: Arc::new(Mutex::new(Vec::new())),
+            clock,
         }
+    }
+
+    fn now(&self) -> u64 {
+        self.clock.now_unix_millis()
     }
 
     /// Emit a structured event
@@ -52,7 +58,7 @@ impl EventCollector {
     pub fn trace(&self, message: impl Into<String>, context: Option<String>) {
         self.emit(Event {
             level: EventLevel::Trace,
-            timestamp: current_timestamp(),
+            timestamp: self.now(),
             message: message.into(),
             context,
         });
@@ -62,7 +68,7 @@ impl EventCollector {
     pub fn info(&self, message: impl Into<String>, context: Option<String>) {
         self.emit(Event {
             level: EventLevel::Info,
-            timestamp: current_timestamp(),
+            timestamp: self.now(),
             message: message.into(),
             context,
         });
@@ -72,7 +78,7 @@ impl EventCollector {
     pub fn warn(&self, message: impl Into<String>, context: Option<String>) {
         self.emit(Event {
             level: EventLevel::Warn,
-            timestamp: current_timestamp(),
+            timestamp: self.now(),
             message: message.into(),
             context,
         });
@@ -82,7 +88,7 @@ impl EventCollector {
     pub fn error(&self, message: impl Into<String>, context: Option<String>) {
         self.emit(Event {
             level: EventLevel::Error,
-            timestamp: current_timestamp(),
+            timestamp: self.now(),
             message: message.into(),
             context,
         });
@@ -112,16 +118,8 @@ impl EventCollector {
 
 impl Default for EventCollector {
     fn default() -> Self {
-        Self::new()
+        Self::new(SystemClock::shared())
     }
-}
-
-/// Get current timestamp in milliseconds since epoch
-fn current_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -130,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_event_collection() {
-        let collector = EventCollector::new();
+        let collector = EventCollector::default();
 
         collector.info("test message", None);
         collector.error("error message", Some("context".to_string()));
@@ -144,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_filter_by_level() {
-        let collector = EventCollector::new();
+        let collector = EventCollector::default();
 
         collector.info("info1", None);
         collector.error("error1", None);

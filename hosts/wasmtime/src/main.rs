@@ -149,6 +149,7 @@ fn demo_trust_verification(host: &CompositorHost) -> Result<()> {
     // Initialize trust store
     let trust_store = compose_host_wasmtime::trust::TrustStore::new(
         std::path::PathBuf::from(".compose/trust"),
+        compose_host_wasmtime::SystemClock::shared(),
     )?;
 
     // Verify using dev backend (no real verification)

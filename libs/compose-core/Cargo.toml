@@ -27,3 +27,6 @@ wasmparser = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "by
 
 # File system traversal for blob CAS
 walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

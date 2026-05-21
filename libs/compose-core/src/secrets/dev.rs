@@ -1,19 +1,22 @@
 /// Development/in-memory secret backend
 /// For testing and development only - stores secrets in memory
 use super::*;
+use crate::host::{SharedClock, SystemClock};
 use std::sync::Arc;
 use std::sync::Mutex;
 
 /// Development secret backend
 pub struct DevBackend {
     secrets: Arc<Mutex<HashMap<SecretId, Vec<u8>>>>,
+    clock: SharedClock,
 }
 
 impl DevBackend {
-    /// Create a new dev backend
-    pub fn new() -> Self {
+    /// Create a new dev backend backed by the given clock.
+    pub fn new(clock: SharedClock) -> Self {
         Self {
             secrets: Arc::new(Mutex::new(HashMap::new())),
+            clock,
         }
     }
 
@@ -38,7 +41,7 @@ impl DevBackend {
 
 impl Default for DevBackend {
     fn default() -> Self {
-        Self::new()
+        Self::new(SystemClock::shared())
     }
 }
 
@@ -61,7 +64,7 @@ impl SecretBackend for DevBackend {
             Ok(SecretMetadata {
                 id: id.clone(),
                 backend: "dev://".to_string(),
-                created_at: Some(current_timestamp()),
+                created_at: Some(self.clock.now_unix_secs()),
                 expires_at: None,
                 metadata: Some("dev backend - not for production".to_string()),
             })
@@ -81,7 +84,7 @@ mod tests {
 
     #[test]
     fn test_dev_backend() {
-        let backend = DevBackend::new();
+        let backend = DevBackend::new(SystemClock::shared());
 
         // Add a secret
         backend.add_secret("api-key", b"secret123");
@@ -107,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_not_found() {
-        let backend = DevBackend::new();
+        let backend = DevBackend::new(SystemClock::shared());
         let result = backend.resolve(&"nonexistent".to_string());
         assert!(matches!(result, Err(SecretError::NotFound)));
     }

@@ -1,5 +1,6 @@
 /// Trust verification backends
 use super::*;
+use crate::host::SharedClock;
 
 /// Trust backend trait
 pub trait TrustBackend: Send + Sync {
@@ -16,7 +17,15 @@ pub trait TrustBackend: Send + Sync {
 }
 
 /// Development trust backend (no verification)
-pub struct DevTrustBackend;
+pub struct DevTrustBackend {
+    clock: SharedClock,
+}
+
+impl DevTrustBackend {
+    pub fn new(clock: SharedClock) -> Self {
+        Self { clock }
+    }
+}
 
 impl TrustBackend for DevTrustBackend {
     fn scheme(&self) -> &str {
@@ -40,7 +49,7 @@ impl TrustBackend for DevTrustBackend {
 
         Ok(VerificationMetadata {
             signer: "dev-mode".to_string(),
-            timestamp: Some(current_timestamp()),
+            timestamp: Some(self.clock.now_unix_secs()),
             backend: "dev".to_string(),
         })
     }
@@ -50,29 +59,26 @@ impl TrustBackend for DevTrustBackend {
 pub struct SigStoreTrustBackend {
     fulcio_url: String,
     rekor_url: String,
+    clock: SharedClock,
 }
 
 impl SigStoreTrustBackend {
     /// Create a new SigStore backend
-    pub fn new() -> Self {
+    pub fn new(clock: SharedClock) -> Self {
         Self {
             fulcio_url: "https://fulcio.sigstore.dev".to_string(),
             rekor_url: "https://rekor.sigstore.dev".to_string(),
+            clock,
         }
     }
 
     /// Create with custom URLs
-    pub fn with_urls(fulcio_url: String, rekor_url: String) -> Self {
+    pub fn with_urls(fulcio_url: String, rekor_url: String, clock: SharedClock) -> Self {
         Self {
             fulcio_url,
             rekor_url,
+            clock,
         }
-    }
-}
-
-impl Default for SigStoreTrustBackend {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -118,7 +124,7 @@ impl TrustBackend for SigStoreTrustBackend {
 
         Ok(VerificationMetadata {
             signer: identity,
-            timestamp: Some(current_timestamp()),
+            timestamp: Some(self.clock.now_unix_secs()),
             backend: "sigstore".to_string(),
         })
     }
@@ -165,11 +171,4 @@ impl TrustBackend for PgpTrustBackend {
             "PGP verification not yet implemented",
         ))
     }
-}
-
-fn current_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }

@@ -12,16 +12,18 @@ pub mod pkcs11_backend;
 // Re-export the portable core so downstream consumers
 // (composectl, conformance/runner) keep working unchanged.
 pub use compose_core::{
-    attest, audit, blobs, emit, events, limits, metrics, plan, policy, secrets, trust, types,
+    attest, audit, blobs, emit, events, host, limits, metrics, plan, policy, secrets, trust, types,
 };
 pub use compose_core::{
-    AttestationService, AuditLogger, BlobStore, EnforcedPolicy, EventCollector, HostPolicy,
-    MetricsCollector, PlanValidator, PolicyEnforcer, SecretManager,
+    AttestationService, AuditLogger, BlobStorage, BlobStore, EnforcedPolicy, EventCollector,
+    HostPolicy, MetricsCollector, PlanValidator, PolicyEnforcer, SecretManager, SharedBlobs,
+    SharedClock, SystemClock,
 };
 pub use compose_core::types::*;
 
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::Arc;
 use wasmtime::Engine;
 
 /// Compositor host configuration
@@ -55,13 +57,14 @@ impl Default for HostConfig {
 pub struct CompositorHost {
     pub config: HostConfig,
     pub engine: Engine,
-    pub blobs: BlobStore,
+    pub blobs: SharedBlobs,
     pub events: EventCollector,
     pub secrets: SecretManager,
     pub policy_enforcer: PolicyEnforcer,
     pub audit_logger: AuditLogger,
     pub metrics: MetricsCollector,
     pub attestation: AttestationService,
+    pub clock: SharedClock,
 }
 
 impl CompositorHost {
@@ -78,29 +81,29 @@ impl CompositorHost {
         wasmtime_config.wasm_component_model(true);
         let engine = Engine::new(&wasmtime_config)?;
 
-        // Initialize subsystems
-        let blobs = BlobStore::new(config.blob_dir.clone(), config.max_blob_size)?;
-        let events = EventCollector::new();
-        let secrets = SecretManager::new();
+        // The host satisfies the orchestrator's `Clock` and `BlobStorage`
+        // capabilities using std-based implementations. When the orchestrator
+        // moves into a wasm component, these wires become WIT imports.
+        let clock: SharedClock = SystemClock::shared();
+        let blobs: SharedBlobs = Arc::new(BlobStore::new(
+            config.blob_dir.clone(),
+            config.max_blob_size,
+        )?);
+
+        let events = EventCollector::new(clock.clone());
+        let secrets = SecretManager::new(clock.clone());
 
         // Register dev backend by default with some test secrets
-        let dev_backend = compose_core::secrets::dev::DevBackend::new();
+        let dev_backend = compose_core::secrets::dev::DevBackend::new(clock.clone());
         // Add test secrets for demos
         dev_backend.add_secret("api-key", b"super-secret-key-12345");
         dev_backend.add_secret("db-password", b"p@ssw0rd!");
         secrets.register_backend(Box::new(dev_backend))?;
 
-        // Initialize policy enforcer with default host policy
         let policy_enforcer = PolicyEnforcer::with_defaults();
-
-        // Initialize audit logger
-        let audit_logger = AuditLogger::new(config.audit_dir.clone())?;
-
-        // Initialize metrics collector
-        let metrics = MetricsCollector::new();
-
-        // Initialize attestation service
-        let attestation = AttestationService::new("wasmtime-host".to_string());
+        let audit_logger = AuditLogger::new(config.audit_dir.clone(), clock.clone())?;
+        let metrics = MetricsCollector::new(clock.clone());
+        let attestation = AttestationService::new("wasmtime-host".to_string(), clock.clone());
 
         Ok(Self {
             config,
@@ -112,6 +115,7 @@ impl CompositorHost {
             audit_logger,
             metrics,
             attestation,
+            clock,
         })
     }
 

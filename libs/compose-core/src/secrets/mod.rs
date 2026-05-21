@@ -1,4 +1,5 @@
 /// Secret management with pluggable backends
+use crate::host::{SharedClock, SystemClock};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -97,11 +98,11 @@ pub enum TokenTtl {
 }
 
 impl TokenTtl {
-    /// Calculate the expiration timestamp from now
-    fn expires_at(&self) -> Option<u64> {
+    /// Calculate the expiration timestamp given the current time (seconds).
+    fn expires_at(&self, now: u64) -> Option<u64> {
         match self {
             TokenTtl::Never => None,
-            TokenTtl::Seconds(ttl) => Some(current_timestamp() + ttl),
+            TokenTtl::Seconds(ttl) => Some(now + ttl),
         }
     }
 }
@@ -119,22 +120,28 @@ pub struct SecretManager {
     tokens: Arc<Mutex<HashMap<SecretToken, TokenEntry>>>,
     token_counter: Arc<Mutex<u64>>,
     token_ttl: TokenTtl,
+    clock: SharedClock,
 }
 
 impl SecretManager {
-    /// Create a new secret manager with default token TTL (1 hour)
-    pub fn new() -> Self {
-        Self::new_with_ttl(TokenTtl::default())
+    /// Create a new secret manager with default token TTL (1 hour).
+    pub fn new(clock: SharedClock) -> Self {
+        Self::new_with_ttl(TokenTtl::default(), clock)
     }
 
-    /// Create a new secret manager with custom token TTL
-    pub fn new_with_ttl(token_ttl: TokenTtl) -> Self {
+    /// Create a new secret manager with custom token TTL.
+    pub fn new_with_ttl(token_ttl: TokenTtl, clock: SharedClock) -> Self {
         Self {
             backends: Arc::new(Mutex::new(HashMap::new())),
             tokens: Arc::new(Mutex::new(HashMap::new())),
             token_counter: Arc::new(Mutex::new(0)),
             token_ttl,
+            clock,
         }
+    }
+
+    fn now_secs(&self) -> u64 {
+        self.clock.now_unix_secs()
     }
 
     /// Get the current token TTL setting
@@ -173,8 +180,8 @@ impl SecretManager {
         let entry = TokenEntry {
             secret_id: id.clone(),
             backend_uri: backend_uri.clone(),
-            issued_at: current_timestamp(),
-            expires_at: self.token_ttl.expires_at(),
+            issued_at: self.now_secs(),
+            expires_at: self.token_ttl.expires_at(self.now_secs()),
         };
 
         self.tokens.lock().unwrap().insert(token.clone(), entry);
@@ -191,7 +198,7 @@ impl SecretManager {
 
         // Check expiration
         if let Some(expires_at) = entry.expires_at {
-            if current_timestamp() > expires_at {
+            if self.now_secs() > expires_at {
                 return Err(SecretError::Expired);
             }
         }
@@ -212,7 +219,7 @@ impl SecretManager {
         let tokens = self.tokens.lock().unwrap();
         if let Some(entry) = tokens.get(token) {
             if let Some(expires_at) = entry.expires_at {
-                Ok(current_timestamp() <= expires_at)
+                Ok(self.now_secs() <= expires_at)
             } else {
                 Ok(true)
             }
@@ -231,7 +238,7 @@ impl SecretManager {
     /// Returns the number of tokens removed
     pub fn cleanup_expired_tokens(&self) -> usize {
         let mut tokens = self.tokens.lock().unwrap();
-        let current_time = current_timestamp();
+        let current_time = self.now_secs();
         let initial_count = tokens.len();
 
         tokens.retain(|_, entry| {
@@ -248,7 +255,7 @@ impl SecretManager {
     /// Get statistics about the token store
     pub fn token_stats(&self) -> TokenStats {
         let tokens = self.tokens.lock().unwrap();
-        let current_time = current_timestamp();
+        let current_time = self.now_secs();
         let mut expired = 0;
         let mut active = 0;
         let mut never_expire = 0;
@@ -350,30 +357,25 @@ impl SecretManager {
     fn generate_token(&self) -> SecretToken {
         let mut counter = self.token_counter.lock().unwrap();
         *counter += 1;
-        let timestamp = current_timestamp();
+        let timestamp = self.now_secs();
         format!("token_{}_{}", timestamp, *counter)
     }
 }
 
 impl Default for SecretManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(SystemClock::shared())
     }
-}
-
-/// Get current timestamp in seconds since epoch
-fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
-    use std::time::Duration;
+    use crate::host::{Clock, ManualClock};
+
+    fn now_secs() -> u64 {
+        SystemClock.now_unix_secs()
+    }
 
     #[test]
     fn test_extract_scheme() {
@@ -391,10 +393,10 @@ mod tests {
     #[test]
     fn test_token_ttl_default() {
         let ttl = TokenTtl::default();
-        let expires = ttl.expires_at();
+        let expires = ttl.expires_at(now_secs());
         assert!(expires.is_some());
-        let expected_min = current_timestamp() + 3599;
-        let expected_max = current_timestamp() + 3601;
+        let expected_min = now_secs() + 3599;
+        let expected_max = now_secs() + 3601;
         let actual = expires.unwrap();
         assert!(actual >= expected_min && actual <= expected_max);
     }
@@ -402,119 +404,98 @@ mod tests {
     #[test]
     fn test_token_ttl_never() {
         let ttl = TokenTtl::Never;
-        assert!(ttl.expires_at().is_none());
+        assert!(ttl.expires_at(now_secs()).is_none());
     }
 
     #[test]
     fn test_token_ttl_custom() {
         let ttl = TokenTtl::Seconds(60);
-        let expires = ttl.expires_at();
+        let expires = ttl.expires_at(now_secs());
         assert!(expires.is_some());
-        let expected_min = current_timestamp() + 59;
-        let expected_max = current_timestamp() + 61;
+        let expected_min = now_secs() + 59;
+        let expected_max = now_secs() + 61;
         let actual = expires.unwrap();
         assert!(actual >= expected_min && actual <= expected_max);
     }
 
     #[test]
     fn test_token_expiration() {
-        // Create manager with 1-second TTL for testing
-        let manager = SecretManager::new_with_ttl(TokenTtl::Seconds(1));
+        // Use a manual clock so we can deterministically advance past the TTL.
+        let clock = ManualClock::shared(1_000);
+        let manager = SecretManager::new_with_ttl(TokenTtl::Seconds(1), clock.clone());
 
-        // Register dev backend and add a test secret
-        let backend = dev::DevBackend::new();
+        let backend = dev::DevBackend::new(clock.clone());
         backend.add_secret("test", b"test-value");
         manager.register_backend(Box::new(backend)).unwrap();
 
-        // Resolve a secret to get a token
         let token = manager.resolve(&"test".to_string(), &"dev://".to_string()).unwrap();
 
-        // Verify token is valid immediately
+        // Valid immediately.
         assert!(manager.validate_token(&token).unwrap());
+        assert!(manager.get_value(&token).is_ok());
 
-        // Get value should work
-        let value = manager.get_value(&token);
-        assert!(value.is_ok());
+        // Advance past expiration.
+        clock.advance(2);
 
-        // Wait for token to expire (sleep longer than TTL to account for timing)
-        thread::sleep(Duration::from_millis(1500));
-
-        // Token should be invalid now
         assert!(!manager.validate_token(&token).unwrap());
-
-        // Getting value should fail with Expired error
         let value = manager.get_value(&token);
-        assert!(value.is_err());
         assert!(matches!(value.unwrap_err(), SecretError::Expired));
     }
 
     #[test]
     fn test_token_never_expires() {
-        // Create manager with no expiration
-        let manager = SecretManager::new_with_ttl(TokenTtl::Never);
+        let clock = ManualClock::shared(1_000);
+        let manager = SecretManager::new_with_ttl(TokenTtl::Never, clock.clone());
 
-        // Register dev backend and add a test secret
-        let backend = dev::DevBackend::new();
+        let backend = dev::DevBackend::new(clock.clone());
         backend.add_secret("test", b"test-value");
         manager.register_backend(Box::new(backend)).unwrap();
 
-        // Resolve a secret to get a token
         let token = manager.resolve(&"test".to_string(), &"dev://".to_string()).unwrap();
 
-        // Token should always be valid
         assert!(manager.validate_token(&token).unwrap());
 
-        // Even after waiting, token should still be valid
-        thread::sleep(Duration::from_millis(100));
+        // Even after an arbitrarily large jump, the token is still valid.
+        clock.advance(1_000_000);
         assert!(manager.validate_token(&token).unwrap());
-
-        // Get value should always work
         assert!(manager.get_value(&token).is_ok());
     }
 
     #[test]
     fn test_cleanup_expired_tokens() {
-        // Create manager with 1-second TTL
-        let manager = SecretManager::new_with_ttl(TokenTtl::Seconds(1));
+        let clock = ManualClock::shared(1_000);
+        let manager = SecretManager::new_with_ttl(TokenTtl::Seconds(1), clock.clone());
 
-        // Register dev backend and add test secrets
-        let backend = dev::DevBackend::new();
+        let backend = dev::DevBackend::new(clock.clone());
         backend.add_secret("test1", b"value1");
         backend.add_secret("test2", b"value2");
         backend.add_secret("test3", b"value3");
         manager.register_backend(Box::new(backend)).unwrap();
 
-        // Create multiple tokens
         let token1 = manager.resolve(&"test1".to_string(), &"dev://".to_string()).unwrap();
         let token2 = manager.resolve(&"test2".to_string(), &"dev://".to_string()).unwrap();
         let token3 = manager.resolve(&"test3".to_string(), &"dev://".to_string()).unwrap();
 
-        // All tokens should be active
         let stats = manager.token_stats();
         assert_eq!(stats.total, 3);
         assert_eq!(stats.active, 3);
         assert_eq!(stats.expired, 0);
 
-        // Wait for tokens to expire (sleep longer than TTL to account for timing)
-        thread::sleep(Duration::from_millis(1500));
+        clock.advance(2);
 
-        // Check stats - tokens should be expired
         let stats = manager.token_stats();
         assert_eq!(stats.total, 3);
         assert_eq!(stats.active, 0);
         assert_eq!(stats.expired, 3);
 
-        // Cleanup expired tokens
         let removed = manager.cleanup_expired_tokens();
         assert_eq!(removed, 3);
 
-        // Stats should show empty store
         let stats = manager.token_stats();
         assert_eq!(stats.total, 0);
         assert_eq!(stats.active, 0);
         assert_eq!(stats.expired, 0);
 
-        // Tokens should no longer be valid
         assert!(!manager.validate_token(&token1).unwrap());
         assert!(!manager.validate_token(&token2).unwrap());
         assert!(!manager.validate_token(&token3).unwrap());
@@ -522,46 +503,38 @@ mod tests {
 
     #[test]
     fn test_token_stats_mixed() {
-        // Create manager with 1-second TTL for some tokens
-        let mut manager = SecretManager::new_with_ttl(TokenTtl::Seconds(1));
+        let clock = ManualClock::shared(1_000);
+        let mut manager = SecretManager::new_with_ttl(TokenTtl::Seconds(1), clock.clone());
 
-        // Register dev backend and add test secrets
-        let backend = dev::DevBackend::new();
+        let backend = dev::DevBackend::new(clock.clone());
         backend.add_secret("test1", b"value1");
         backend.add_secret("test2", b"value2");
         backend.add_secret("test3", b"value3");
         manager.register_backend(Box::new(backend)).unwrap();
 
-        // Create expiring tokens
+        // Two expiring tokens, one never-expiring.
         let _token1 = manager.resolve(&"test1".to_string(), &"dev://".to_string()).unwrap();
         let _token2 = manager.resolve(&"test2".to_string(), &"dev://".to_string()).unwrap();
-
-        // Switch to never-expiring
         manager.set_token_ttl(TokenTtl::Never);
         let _token3 = manager.resolve(&"test3".to_string(), &"dev://".to_string()).unwrap();
 
-        // Initial stats
         let stats = manager.token_stats();
         assert_eq!(stats.total, 3);
         assert_eq!(stats.active, 2);
         assert_eq!(stats.never_expire, 1);
         assert_eq!(stats.expired, 0);
 
-        // Wait for expiring tokens to expire (sleep longer than TTL to account for timing)
-        thread::sleep(Duration::from_millis(1500));
+        clock.advance(2);
 
-        // Stats after expiration
         let stats = manager.token_stats();
         assert_eq!(stats.total, 3);
         assert_eq!(stats.active, 0);
         assert_eq!(stats.never_expire, 1);
         assert_eq!(stats.expired, 2);
 
-        // Cleanup should only remove expired tokens
         let removed = manager.cleanup_expired_tokens();
         assert_eq!(removed, 2);
 
-        // Final stats
         let stats = manager.token_stats();
         assert_eq!(stats.total, 1);
         assert_eq!(stats.active, 0);

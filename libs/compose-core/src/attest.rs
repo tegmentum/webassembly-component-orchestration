@@ -1,4 +1,5 @@
 /// Attestation and cryptographic signing
+use crate::host::{Clock, SharedClock, SystemClock};
 use crate::types::Digest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -91,14 +92,16 @@ impl KeyStore {
 pub struct AttestationService {
     host_id: String,
     key_store: Arc<Mutex<KeyStore>>,
+    clock: SharedClock,
 }
 
 impl AttestationService {
-    /// Create a new attestation service
-    pub fn new(host_id: String) -> Self {
+    /// Create a new attestation service backed by the given clock.
+    pub fn new(host_id: String, clock: SharedClock) -> Self {
         Self {
             host_id,
             key_store: Arc::new(Mutex::new(KeyStore::new())),
+            clock,
         }
     }
 
@@ -147,7 +150,7 @@ impl AttestationService {
         Ok(VerificationResult {
             valid,
             signer: attestation.claim.host_id.clone(),
-            verified_at: current_timestamp(),
+            verified_at: self.clock.now_unix_millis(),
             error: if valid {
                 None
             } else {
@@ -236,20 +239,17 @@ impl AttestationService {
     }
 }
 
-fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn current_timestamp() -> u64 {
+        SystemClock.now_unix_millis()
+    }
+
     #[test]
     fn test_attest_and_verify() {
-        let service = AttestationService::new("test-host".to_string());
+        let service = AttestationService::new("test-host".to_string(), SystemClock::shared());
 
         let claim = Claim {
             claim_type: "execution".to_string(),
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_invalid_signature() {
-        let service = AttestationService::new("test-host".to_string());
+        let service = AttestationService::new("test-host".to_string(), SystemClock::shared());
 
         let claim = Claim {
             claim_type: "execution".to_string(),
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_export_json() {
-        let service = AttestationService::new("test-host".to_string());
+        let service = AttestationService::new("test-host".to_string(), SystemClock::shared());
 
         let claim = Claim {
             claim_type: "execution".to_string(),
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_export_slsa() {
-        let service = AttestationService::new("test-host".to_string());
+        let service = AttestationService::new("test-host".to_string(), SystemClock::shared());
 
         let claim = Claim {
             claim_type: "execution".to_string(),

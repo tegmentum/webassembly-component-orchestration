@@ -3,9 +3,14 @@ members = [
     "hosts/wasmtime",
     "tools/composectl",
     "conformance/runner",
-    "examples/hello-cli",
-    "examples/hello-http",
     "libs/compose-core",
     "libs/pkcs11-host-adapter",
+]
+# Examples are wasm components built via their own build.sh scripts
+# (wasm32-wasip1 / wasm32-wasip2) and must not be part of the native
+# workspace build.
+exclude = [
+    "examples/hello-cli",
+    "examples/hello-http",
 ]
 resolver = "2"

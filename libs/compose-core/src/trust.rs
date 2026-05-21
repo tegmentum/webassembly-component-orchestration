@@ -1,9 +1,9 @@
 /// Trust verification and signature checking
+use crate::host::{SharedClock, SystemClock};
 use crate::types::{Digest, Error, ErrorCode, VerificationMetadata, VerificationResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 mod backends;
 pub use backends::*;
@@ -22,16 +22,21 @@ pub struct TrustStore {
     backends: Arc<Mutex<HashMap<String, Box<dyn TrustBackend>>>>,
     cache: Arc<Mutex<HashMap<Vec<u8>, CacheEntry>>>,
     cache_ttl: u64, // Cache TTL in seconds
+    clock: SharedClock,
 }
 
 impl TrustStore {
     /// Create a new trust store with default cache TTL (24 hours)
-    pub fn new(trust_dir: PathBuf) -> anyhow::Result<Self> {
-        Self::with_ttl(trust_dir, 86400)
+    pub fn new(trust_dir: PathBuf, clock: SharedClock) -> anyhow::Result<Self> {
+        Self::with_ttl(trust_dir, 86400, clock)
     }
 
     /// Create a new trust store with custom cache TTL
-    pub fn with_ttl(trust_dir: PathBuf, cache_ttl: u64) -> anyhow::Result<Self> {
+    pub fn with_ttl(
+        trust_dir: PathBuf,
+        cache_ttl: u64,
+        clock: SharedClock,
+    ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&trust_dir)?;
 
         let store = Self {
@@ -40,13 +45,18 @@ impl TrustStore {
             backends: Arc::new(Mutex::new(HashMap::new())),
             cache: Arc::new(Mutex::new(HashMap::new())),
             cache_ttl,
+            clock: clock.clone(),
         };
 
         // Register default backends
-        store.register_backend(Box::new(DevTrustBackend))?;
-        store.register_backend(Box::new(SigStoreTrustBackend::new()))?;
+        store.register_backend(Box::new(DevTrustBackend::new(clock.clone())))?;
+        store.register_backend(Box::new(SigStoreTrustBackend::new(clock)))?;
 
         Ok(store)
+    }
+
+    fn now_secs(&self) -> u64 {
+        self.clock.now_unix_secs()
     }
 
     /// Register a trust backend
@@ -112,7 +122,7 @@ impl TrustStore {
     fn get_cached(&self, digest: &Digest) -> Option<CacheEntry> {
         let cache = self.cache.lock().unwrap();
         if let Some(entry) = cache.get(digest) {
-            let age = current_timestamp() - entry.cached_at;
+            let age = self.now_secs() - entry.cached_at;
             if age < self.cache_ttl {
                 return Some(entry.clone());
             }
@@ -124,7 +134,7 @@ impl TrustStore {
     fn cache_verification(&self, digest: &Digest, metadata: VerificationMetadata) {
         let entry = CacheEntry {
             metadata,
-            cached_at: current_timestamp(),
+            cached_at: self.now_secs(),
         };
         self.cache.lock().unwrap().insert(digest.clone(), entry);
     }
@@ -222,14 +232,6 @@ impl TrustStore {
     }
 }
 
-/// Get current timestamp in seconds since epoch
-fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,7 +240,7 @@ mod tests {
     #[test]
     fn test_trust_digest() {
         let dir = tempdir().unwrap();
-        let store = TrustStore::new(dir.path().to_path_buf()).unwrap();
+        let store = TrustStore::new(dir.path().to_path_buf(), SystemClock::shared()).unwrap();
 
         let digest = vec![0u8; 32];
         let metadata = VerificationMetadata {

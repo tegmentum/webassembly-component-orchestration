@@ -1,4 +1,5 @@
 /// File-backed content-addressed storage (CAS) for blobs
+use crate::host::BlobStorage;
 use crate::types::{Digest, Error, ErrorCode};
 use anyhow::Result;
 use sha2::{Digest as Sha2Digest, Sha256};
@@ -148,6 +149,32 @@ impl BlobStore {
         let dir = &hex_digest[..2];
         let file = &hex_digest[2..];
         self.root.join(dir).join(file)
+    }
+}
+
+impl BlobStorage for BlobStore {
+    fn put(&self, bytes: &[u8]) -> Result<Digest, Error> {
+        BlobStore::put(self, bytes)
+    }
+
+    fn get(&self, digest: &Digest) -> Result<Vec<u8>, Error> {
+        BlobStore::get(self, digest)
+    }
+
+    fn has(&self, digest: &Digest) -> bool {
+        BlobStore::has(self, digest)
+    }
+
+    fn size(&self, digest: &Digest) -> Option<u64> {
+        BlobStore::size(self, digest)
+    }
+
+    fn delete(&self, digest: &Digest) -> Result<(), Error> {
+        BlobStore::delete(self, digest)
+    }
+
+    fn list_all(&self) -> Vec<Digest> {
+        BlobStore::list_all(self)
     }
 }
 

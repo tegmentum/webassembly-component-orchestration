@@ -151,15 +151,14 @@ impl HostInstance for HostState {
     }
 }
 
-/// Load an orchestrator component from raw wasm bytes and call its
-/// `compose:host/smoke.host-name` export.
-///
-/// Returns the string the orchestrator chose to report — which the
-/// smoke component constructs by importing `runtime-info.get-fingerprint`
-/// and returning the runtime name. A successful round-trip therefore
-/// proves the host imports, guest exports, and bindgen wiring are
-/// all aligned end-to-end.
-pub fn run_smoke(engine: &Engine, orchestrator_wasm: &[u8]) -> Result<String> {
+/// One-shot loader: parses the orchestrator component, wires WASI +
+/// `compose:host` into the linker, and instantiates. Used internally
+/// by `run_smoke` and `run_digest`; exposed in case callers want
+/// direct access to the bindgen-generated `Orchestrator` handle.
+pub fn instantiate_orchestrator(
+    engine: &Engine,
+    orchestrator_wasm: &[u8],
+) -> Result<(Store<HostState>, Orchestrator)> {
     let component = Component::new(engine, orchestrator_wasm)
         .ctx("failed to parse orchestrator component bytes")?;
 
@@ -182,11 +181,38 @@ pub fn run_smoke(engine: &Engine, orchestrator_wasm: &[u8]) -> Result<String> {
     let mut store = Store::new(engine, state);
     let orchestrator = Orchestrator::instantiate(&mut store, &component, &linker)
         .ctx("failed to instantiate orchestrator component")?;
-    let name = orchestrator
+    Ok((store, orchestrator))
+}
+
+/// Load an orchestrator component and call its
+/// `compose:host/smoke.host-name` export.
+///
+/// Returns the string the orchestrator reports — which the smoke
+/// component constructs by importing `runtime-info.get-fingerprint`
+/// and returning the runtime name. A successful round-trip proves
+/// the host imports, guest exports, and bindgen wiring are aligned.
+pub fn run_smoke(engine: &Engine, orchestrator_wasm: &[u8]) -> Result<String> {
+    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm)?;
+    orchestrator
         .compose_host_smoke()
         .call_host_name(&mut store)
-        .ctx("orchestrator smoke.host-name call failed")?;
-    Ok(name)
+        .ctx("orchestrator smoke.host-name call failed")
+}
+
+/// Load an orchestrator component and call its `compose:host/smoke.digest`
+/// export with the given bytes.
+///
+/// The digest is computed *inside the wasm component* by dispatching
+/// to `compose_core::blobs::compute_digest` — the same function the
+/// native host uses for blob CAS. A successful round-trip proves the
+/// orchestrator's pure-Rust logic is reachable from a wasm guest, not
+/// just from native callers.
+pub fn run_digest(engine: &Engine, orchestrator_wasm: &[u8], bytes: &[u8]) -> Result<Vec<u8>> {
+    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm)?;
+    orchestrator
+        .compose_host_smoke()
+        .call_digest(&mut store, bytes)
+        .ctx("orchestrator smoke.digest call failed")
 }
 
 /// Convenience for the bindgen-generated `add_to_linker` signature

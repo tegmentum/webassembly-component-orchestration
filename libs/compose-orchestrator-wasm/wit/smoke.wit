@@ -8,4 +8,12 @@ interface smoke {
     /// host's reported runtime name. Used to verify import wiring
     /// from a wasm guest to a native host.
     host-name: func() -> string;
+
+    /// Compute the SHA-256 digest of `bytes` by calling into
+    /// `compose-core`'s digest function from inside the wasm
+    /// component. Used to verify that the orchestrator's pure-Rust
+    /// logic is reachable from a wasm guest — i.e. that compose-core
+    /// genuinely compiles and runs as part of the orchestrator
+    /// component, not just as a Rust library on the native host.
+    digest: func(bytes: list<u8>) -> list<u8>;
 }

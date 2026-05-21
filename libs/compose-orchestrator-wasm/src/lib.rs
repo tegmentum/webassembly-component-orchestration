@@ -23,6 +23,14 @@ impl Guest for Component {
         let fp = crate::compose::host::runtime_info::get_fingerprint();
         fp.runtime_name
     }
+
+    fn digest(bytes: Vec<u8>) -> Vec<u8> {
+        // Dispatch into compose-core. The exact same function the
+        // native host uses for blob CAS now runs inside the wasm
+        // component — proving that the orchestrator's pure-Rust
+        // logic is reachable through the WIT export surface.
+        compose_core::blobs::compute_digest(&bytes)
+    }
 }
 
 export!(Component);

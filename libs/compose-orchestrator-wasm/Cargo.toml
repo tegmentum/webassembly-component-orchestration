@@ -12,3 +12,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.57"
+
+# The whole point: the orchestrator's logic is the compose-core crate.
+# This dependency demonstrates the architecture — pure-Rust
+# orchestrator code reachable from a wasm component.
+compose-core = { path = "../compose-core" }

@@ -1,0 +1,14 @@
+[package]
+name = "compose-orchestrator-wasm"
+version = "0.0.1"
+edition = "2021"
+authors = ["Zachary Whitley <maintainer@example.com>"]
+description = "Orchestrator built as a wasm component, consuming compose:host"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.57"

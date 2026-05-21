@@ -12,5 +12,6 @@ members = [
 exclude = [
     "examples/hello-cli",
     "examples/hello-http",
+    "libs/compose-orchestrator-wasm",
 ]
 resolver = "2"

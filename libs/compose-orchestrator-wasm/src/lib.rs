@@ -3,9 +3,22 @@
 //! Today this crate exports:
 //!
 //! - `compose:host/smoke` (test-only, will be removed)
-//! - `sys:compose/plan@1.0.0` — `serialize`, `deserialize`, `compute-digest`.
-//!   `validate` is stubbed pending filesystem-backed blob storage via
-//!   wasi:filesystem preopens.
+//! - `sys:compose/plan@1.0.0` — `serialize`, `deserialize`,
+//!   `compute-digest`, and `validate`.
+//!
+//! ## Preopen contract
+//!
+//! `validate` needs to check that every component digest in the plan
+//! has a corresponding blob present. It does that by opening a
+//! `compose_core::blobs::BlobStore` rooted at [`BLOBS_DIR`], a
+//! guest-side path the host MUST preopen via `wasi:filesystem` when
+//! it instantiates this component. If the preopen is missing,
+//! `validate` returns an `internal-error` rather than silently
+//! pretending no blobs exist.
+//!
+//! The host-side mount-point is at the host's discretion (typically
+//! `.compose/blobs/` from `HostConfig`); from the wasm side it is
+//! always `/blobs`.
 wit_bindgen::generate!({
     path: "wit",
     world: "orchestrator",
@@ -17,6 +30,15 @@ mod adapters;
 use exports::compose::host::smoke::Guest as SmokeGuest;
 use exports::sys::compose::plan::{Guest as PlanGuest, PlanV1 as WitPlanV1};
 use sys::compose::types::Error as WitError;
+
+/// Guest-side path the host MUST preopen for blob storage. See module
+/// docs for the full preopen contract.
+const BLOBS_DIR: &str = "/blobs";
+
+/// Default maximum blob size: 100 MiB. Matches the host's default
+/// HostConfig.max_blob_size. A future revision may surface this via
+/// configuration rather than hardcoding it on both sides.
+const MAX_BLOB_SIZE: u64 = 100 * 1024 * 1024;
 
 /// The exported component. Bind every interface this crate provides
 /// onto this one struct; wit-bindgen wires them up via `export!`.
@@ -45,19 +67,23 @@ impl PlanGuest for Component {
         Ok(adapters::core_plan_to_wit(core_plan))
     }
 
-    fn validate(_plan: WitPlanV1) -> Result<(), WitError> {
-        // Full validate() requires a real BlobStore that knows which
-        // component digests are present. That lands once the host
-        // preopens a blobs/ directory via wasi:filesystem and we wire
-        // it through. Until then, return not-implemented honestly
-        // rather than rubber-stamping.
-        Err(WitError {
-            code: sys::compose::types::ErrorCode::NotImplemented,
-            message: "validate() requires a host-preopened blob store; \
-                      use serialize() + compute-digest() for now"
-                .to_string(),
+    fn validate(plan: WitPlanV1) -> Result<(), WitError> {
+        let core_plan = adapters::wit_plan_to_core(plan);
+        let blobs = compose_core::blobs::BlobStore::new(
+            std::path::PathBuf::from(BLOBS_DIR),
+            MAX_BLOB_SIZE,
+        )
+        .map_err(|e| WitError {
+            code: sys::compose::types::ErrorCode::InternalError,
+            message: format!(
+                "failed to open blob store at {BLOBS_DIR} \
+                 (did the host preopen it via wasi:filesystem?): {e}"
+            ),
             context: None,
-        })
+        })?;
+        compose_core::PlanValidator::new(blobs)
+            .validate(&core_plan)
+            .map_err(adapters::core_err_to_wit)
     }
 
     fn compute_digest(plan: WitPlanV1) -> Result<Vec<u8>, WitError> {

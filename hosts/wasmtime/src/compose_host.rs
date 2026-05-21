@@ -18,9 +18,15 @@
 //! `invoker` are stubbed pending the real orchestrator content
 //! that will use them.
 use anyhow::Result;
+use std::path::Path;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+/// Guest-side preopen path the orchestrator expects for its blob
+/// store. Mirror of `BLOBS_DIR` in libs/compose-orchestrator-wasm.
+/// If you change one, change the other.
+pub const ORCHESTRATOR_BLOBS_PREOPEN: &str = "/blobs";
 
 // Wasmtime's Error type doesn't implement std::error::Error so anyhow's
 // .context() doesn't apply directly. This helper trait does the same job.
@@ -158,12 +164,18 @@ impl HostInstance for HostState {
 }
 
 /// One-shot loader: parses the orchestrator component, wires WASI +
-/// `compose:host` into the linker, and instantiates. Used internally
-/// by `run_smoke` and `run_digest`; exposed in case callers want
-/// direct access to the bindgen-generated `Orchestrator` handle.
+/// `compose:host` into the linker, and instantiates.
+///
+/// If `blobs_preopen` is `Some(host_path)`, the host directory at
+/// `host_path` is preopened into the guest at
+/// [`ORCHESTRATOR_BLOBS_PREOPEN`] so the orchestrator can run
+/// `plan.validate` and any other operation that needs the blob CAS.
+/// Callers that only exercise pure functions (smoke, plan.serialize,
+/// plan.compute-digest) can pass `None`.
 pub fn instantiate_orchestrator(
     engine: &Engine,
     orchestrator_wasm: &[u8],
+    blobs_preopen: Option<&Path>,
 ) -> Result<(Store<HostState>, Orchestrator)> {
     let component = Component::new(engine, orchestrator_wasm)
         .ctx("failed to parse orchestrator component bytes")?;
@@ -174,8 +186,26 @@ pub fn instantiate_orchestrator(
     Orchestrator::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)
         .ctx("failed to add compose:host bindings to orchestrator linker")?;
 
+    let mut wasi_builder = WasiCtxBuilder::new();
+    if let Some(path) = blobs_preopen {
+        // Ensure the host-side directory exists before we hand
+        // wasmtime an ambient handle to it; otherwise the guest's
+        // create_dir_all-of-an-existing-dir succeeds vacuously and
+        // the test below would silently pass without validating.
+        std::fs::create_dir_all(path)
+            .map_err(|e| anyhow::anyhow!("failed to create blob preopen directory: {e}"))?;
+        wasi_builder
+            .preopened_dir(
+                path,
+                ORCHESTRATOR_BLOBS_PREOPEN,
+                DirPerms::all(),
+                FilePerms::all(),
+            )
+            .ctx("failed to preopen blobs directory")?;
+    }
+
     let state = HostState {
-        wasi_ctx: WasiCtxBuilder::new().build(),
+        wasi_ctx: wasi_builder.build(),
         wasi_table: ResourceTable::new(),
         runtime_name: "wasmtime".to_string(),
         runtime_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -198,7 +228,7 @@ pub fn instantiate_orchestrator(
 /// and returning the runtime name. A successful round-trip proves
 /// the host imports, guest exports, and bindgen wiring are aligned.
 pub fn run_smoke(engine: &Engine, orchestrator_wasm: &[u8]) -> Result<String> {
-    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm)?;
+    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm, None)?;
     orchestrator
         .compose_host_smoke()
         .call_host_name(&mut store)
@@ -214,7 +244,7 @@ pub fn run_smoke(engine: &Engine, orchestrator_wasm: &[u8]) -> Result<String> {
 /// orchestrator's pure-Rust logic is reachable from a wasm guest, not
 /// just from native callers.
 pub fn run_digest(engine: &Engine, orchestrator_wasm: &[u8], bytes: &[u8]) -> Result<Vec<u8>> {
-    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm)?;
+    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm, None)?;
     orchestrator
         .compose_host_smoke()
         .call_digest(&mut store, bytes)
@@ -261,7 +291,7 @@ pub fn run_plan_compute_digest(
     orchestrator_wasm: &[u8],
     plan: exports::sys::compose::plan::PlanV1,
 ) -> Result<Vec<u8>> {
-    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm)?;
+    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm, None)?;
     let outcome = orchestrator
         .sys_compose_plan()
         .call_compute_digest(&mut store, &plan)
@@ -278,7 +308,7 @@ pub fn run_plan_roundtrip(
     orchestrator_wasm: &[u8],
     plan: exports::sys::compose::plan::PlanV1,
 ) -> Result<exports::sys::compose::plan::PlanV1> {
-    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm)?;
+    let (mut store, orchestrator) = instantiate_orchestrator(engine, orchestrator_wasm, None)?;
     let plan_iface = orchestrator.sys_compose_plan();
 
     let bytes = plan_iface
@@ -292,6 +322,54 @@ pub fn run_plan_roundtrip(
         .ctx("plan.deserialize call failed")?
         .map_err(|e| anyhow::anyhow!("plan.deserialize returned error: {e:?}"))?;
     Ok(restored)
+}
+
+/// Load an orchestrator component with the host's blob directory
+/// preopened at [`ORCHESTRATOR_BLOBS_PREOPEN`], and call
+/// `sys:compose/plan.validate`. The orchestrator opens a BlobStore
+/// against the preopen and checks that every component digest in
+/// the plan is present.
+pub fn run_plan_validate(
+    engine: &Engine,
+    orchestrator_wasm: &[u8],
+    host_blobs_dir: &Path,
+    plan: exports::sys::compose::plan::PlanV1,
+) -> Result<Result<(), exports::sys::compose::plan::Error>> {
+    let (mut store, orchestrator) =
+        instantiate_orchestrator(engine, orchestrator_wasm, Some(host_blobs_dir))?;
+    orchestrator
+        .sys_compose_plan()
+        .call_validate(&mut store, &plan)
+        .ctx("plan.validate call failed")
+}
+
+/// Variant of `sample_plan` that takes a real component digest.
+/// Used by validate tests that need the plan to reference a blob
+/// the host actually has on disk.
+pub fn sample_plan_with_digest(component_digest: Vec<u8>) -> exports::sys::compose::plan::PlanV1 {
+    use exports::sys::compose::plan as p;
+    use sys::compose::types as t;
+    p::PlanV1 {
+        version: "1".to_string(),
+        root: "root".to_string(),
+        components: vec![p::ComponentSpec {
+            id: "root".to_string(),
+            digest: component_digest,
+            source: None,
+        }],
+        bindings: vec![],
+        secrets: vec![],
+        policy: t::Policy {
+            determinism: t::DeterminismMode::Strict,
+            capabilities: vec![],
+            tenant: None,
+            limits: t::ResourceLimits {
+                cpu_ms: None,
+                memory_bytes: None,
+                io_ops: None,
+            },
+        },
+    }
 }
 
 /// Convenience for the bindgen-generated `add_to_linker` signature

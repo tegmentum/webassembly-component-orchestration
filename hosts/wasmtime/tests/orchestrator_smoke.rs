@@ -134,3 +134,68 @@ fn plan_digest_is_deterministic() {
     let d2 = compose_host::run_plan_compute_digest(&engine, &wasm, plan).unwrap();
     assert_eq!(d1, d2, "plan digest must be deterministic across calls");
 }
+
+/// plan.validate succeeds when the plan references a component
+/// digest that is present in the host's preopened blob directory.
+/// Proves that wasi:filesystem really does mount the host blobs/
+/// into the guest at /blobs and the guest's BlobStore can read it.
+#[test]
+fn plan_validate_succeeds_when_blob_present() {
+    use sha2::{Digest, Sha256};
+
+    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let blobs_dir = temp.path().join("blobs");
+    std::fs::create_dir_all(&blobs_dir).unwrap();
+
+    // Pre-populate the host blob store with a real component blob,
+    // sharded the way BlobStore lays out files (first two hex chars
+    // become a subdirectory). Keep the shape in sync with
+    // compose_core::blobs::BlobStore::digest_path.
+    let payload = b"minimal-component-bytes";
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let digest: Vec<u8> = hasher.finalize().to_vec();
+    let hex_digest = hex::encode(&digest);
+    let shard = blobs_dir.join(&hex_digest[..2]);
+    std::fs::create_dir_all(&shard).unwrap();
+    std::fs::write(shard.join(&hex_digest[2..]), payload).unwrap();
+
+    let plan = compose_host::sample_plan_with_digest(digest);
+    let result = compose_host::run_plan_validate(&engine, &wasm, &blobs_dir, plan)
+        .expect("host-side call should succeed");
+
+    assert!(
+        result.is_ok(),
+        "validate should succeed when blob is present: {result:?}"
+    );
+}
+
+/// plan.validate fails with a typed error when the plan references
+/// a component digest that the host's blob store doesn't have.
+/// Proves that the BlobStore behind the preopen actually reads
+/// from the host filesystem (rather than rubber-stamping).
+#[test]
+fn plan_validate_fails_when_blob_missing() {
+    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let blobs_dir = temp.path().join("blobs");
+    std::fs::create_dir_all(&blobs_dir).unwrap();
+    // Note: deliberately empty — no blob with this digest exists.
+
+    let plan = compose_host::sample_plan_with_digest(vec![0u8; 32]);
+    let result = compose_host::run_plan_validate(&engine, &wasm, &blobs_dir, plan)
+        .expect("host-side call should succeed");
+
+    let err = result.expect_err("validate must reject a plan with a missing blob");
+    // The bindgen-generated ErrorCode is a plain `variant` (no PartialEq);
+    // compare via Debug format. A successful preopen + missing-blob
+    // detection should show up as something like EmitMissingBlob or
+    // BlobNotFound rather than the generic InternalError, which would
+    // signal the preopen itself failed.
+    let code_dbg = format!("{:?}", err.code);
+    assert!(
+        !code_dbg.contains("InternalError"),
+        "validate should report a domain-specific code, not InternalError: {err:?}"
+    );
+}

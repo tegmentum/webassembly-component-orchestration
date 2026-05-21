@@ -78,7 +78,10 @@ impl HostAdapter for WasmtimeAdapter {
     }
 
     fn get_audit_count(&self) -> usize {
-        // For conformance, we just report 0 as audit is file-based
+        // Audit now lives in a secure-log SQLite store rather than a
+        // queryable file. Counting entries would mean exposing a
+        // count method on AuditLogger / SecureLog; deferred until the
+        // conformance suite actually asserts on audit volume.
         0
     }
 

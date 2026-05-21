@@ -28,5 +28,12 @@ wasmparser = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "by
 # File system traversal for blob CAS
 walkdir = "2"
 
+# Tamper-evident audit log. Core crate only (wasm32-wasip2 clean);
+# the SQLite-backed store is a native concern wired by host crates.
+secure-log = { path = "../../../secure-log/crates/secure-log" }
+
 [dev-dependencies]
 tempfile = "3"
+# Tests use the in-memory SQLite store; native + dev-only, so it does
+# not affect the wasm32-wasip2 library build.
+secure-log-sqlite = { path = "../../../secure-log/crates/secure-log-sqlite" }

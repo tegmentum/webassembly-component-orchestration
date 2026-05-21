@@ -23,8 +23,11 @@ pub mod trust;
 pub mod types;
 
 pub use attest::AttestationService;
-pub use audit::AuditLogger;
+pub use audit::{AuditLogger, SharedSecureLog};
 pub use blobs::BlobStore;
+// Re-export the secure-log surface host crates need to construct a
+// backend without taking their own direct dependency on the crate.
+pub use secure_log;
 pub use events::EventCollector;
 pub use host::{Clock, SharedClock, SystemClock};
 pub use metrics::MetricsCollector;

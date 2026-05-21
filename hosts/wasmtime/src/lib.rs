@@ -98,7 +98,21 @@ impl CompositorHost {
         secrets.register_backend(Box::new(dev_backend))?;
 
         let policy_enforcer = PolicyEnforcer::with_defaults();
-        let audit_logger = AuditLogger::new(config.audit_dir.clone(), clock.clone())?;
+
+        // Durable, tamper-evident audit log backed by SQLite. Each
+        // tenant becomes a hash-chained secure-log stream; entries
+        // cannot be altered or deleted without breaking verify_chain.
+        let audit_db = config.audit_dir.join("audit.db");
+        let audit_store = secure_log_sqlite::SqliteSecureLogStore::open(&audit_db)
+            .map_err(|e| anyhow::anyhow!("failed to open audit log at {}: {e}", audit_db.display()))?;
+        let secure_log = secure_log::NativeSecureLog::new(
+            Box::new(audit_store),
+            Box::new(secure_log::CborEncoder::new()),
+        );
+        let audit_logger = AuditLogger::new(
+            std::sync::Arc::new(std::sync::Mutex::new(secure_log)),
+            clock.clone(),
+        );
         let metrics = MetricsCollector::new(clock.clone());
         let attestation = AttestationService::new("wasmtime-host".to_string(), clock.clone());
 

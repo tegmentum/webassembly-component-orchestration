@@ -18,6 +18,12 @@ wat = "1"
 # Portable orchestrator core (no wasmtime dependency)
 compose-core = { path = "../../libs/compose-core" }
 
+# Tamper-evident audit: native SQLite-backed secure log. The
+# secure-log core crate comes transitively via compose-core; the
+# host owns the durable SQLite store.
+secure-log = { path = "../../../secure-log/crates/secure-log" }
+secure-log-sqlite = { path = "../../../secure-log/crates/secure-log-sqlite" }
+
 # Used by exec cache and main.rs
 ciborium = "0.2"
 serde = { version = "1", features = ["derive"] }

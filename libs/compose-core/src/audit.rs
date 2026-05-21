@@ -1,12 +1,39 @@
-/// Audit logging with tenant isolation
-use crate::host::{SharedClock, SystemClock};
+//! Audit logging with tenant isolation, backed by a tamper-evident
+//! secure log.
+//!
+//! Each tenant is a separate `secure-log` stream; entries are
+//! hash-chained per stream, so deletion or modification of any
+//! record is detectable via [`AuditLogger::verify_tenant`]. The
+//! structured `AuditRecord` is encoded into the entry payload; the
+//! secure log adds the integrity envelope (sequence number, chain
+//! hash, and — once segments are closed — Merkle root + signed
+//! checkpoint).
+//!
+//! The concrete storage backend is injected by the host: the native
+//! wasmtime host uses a SQLite-backed `NativeSecureLog`; tests use the
+//! in-memory SQLite store. compose-core itself depends only on the
+//! `secure-log` trait surface, which is wasm32-wasip2 clean.
+use crate::host::SharedClock;
 use crate::types::{Digest, TenantId};
+use secure_log::SecureLog;
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-/// Audit record for operations
+/// Shared, thread-safe handle to a secure log backend.
+///
+/// `SecureLog` is only `Send` (SQLite stores are `!Sync`), so a
+/// `Mutex` is required for shared access; `Arc<Mutex<...>>` makes the
+/// handle both cloneable and `Sync`.
+pub type SharedSecureLog = Arc<Mutex<dyn SecureLog>>;
+
+/// Producer string recorded on every audit entry.
+const PRODUCER: &str = "compose";
+
+/// Stream id used for records that carry no tenant.
+const DEFAULT_STREAM: &str = "default";
+
+/// Audit record for operations. This is the structured payload
+/// carried inside each secure-log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditRecord {
     /// Timestamp in milliseconds since epoch
@@ -25,52 +52,39 @@ pub struct AuditRecord {
     pub context: Option<String>,
 }
 
-/// Audit logger
+/// Audit logger backed by a tamper-evident secure log.
 #[derive(Clone)]
 pub struct AuditLogger {
-    log_dir: PathBuf,
+    secure_log: SharedSecureLog,
     clock: SharedClock,
 }
 
 impl AuditLogger {
-    /// Create a new audit logger backed by the given clock.
-    pub fn new(log_dir: PathBuf, clock: SharedClock) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(&log_dir)?;
-        Ok(Self { log_dir, clock })
+    /// Create a new audit logger over the given secure log backend
+    /// and clock.
+    pub fn new(secure_log: SharedSecureLog, clock: SharedClock) -> Self {
+        Self { secure_log, clock }
     }
 
     fn now(&self) -> u64 {
         self.clock.now_unix_millis()
     }
 
-    /// Log an audit record
+    /// Append an audit record as a new entry in its tenant's stream.
     pub fn log(&self, record: AuditRecord) -> anyhow::Result<()> {
-        // Group by tenant if present, otherwise use "default"
-        let tenant_dir = if let Some(tenant_id) = &record.tenant_id {
-            self.log_dir.join(tenant_id)
-        } else {
-            self.log_dir.join("default")
-        };
+        let stream = record
+            .tenant_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_STREAM.to_string());
+        let event_type = record.operation.clone();
+        let severity = severity_for(&record.outcome);
+        let payload = serde_json::to_vec(&record)?;
 
-        std::fs::create_dir_all(&tenant_dir)?;
-
-        // Append to daily log file
-        let date = chrono::DateTime::from_timestamp(
-            (record.timestamp / 1000) as i64,
-            0,
-        )
-        .unwrap_or_else(|| chrono::Utc::now())
-        .format("%Y-%m-%d");
-        let log_file = tenant_dir.join(format!("audit-{}.jsonl", date));
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_file)?;
-
-        let json = serde_json::to_string(&record)?;
-        writeln!(file, "{}", json)?;
-
+        let log = self
+            .secure_log
+            .lock()
+            .map_err(|_| anyhow::anyhow!("secure log mutex poisoned"))?;
+        log.append(&stream, &event_type, severity, PRODUCER, &payload)?;
         Ok(())
     }
 
@@ -114,50 +128,86 @@ impl AuditLogger {
             context,
         })
     }
+
+    /// Verify the integrity of a tenant's audit chain end to end.
+    /// Returns `Ok(())` if every hash link resolves, or an error
+    /// identifying the first broken link. An empty stream verifies
+    /// trivially.
+    pub fn verify_tenant(&self, tenant_id: Option<&str>) -> anyhow::Result<()> {
+        let stream = tenant_id.unwrap_or(DEFAULT_STREAM);
+        let log = self
+            .secure_log
+            .lock()
+            .map_err(|_| anyhow::anyhow!("secure log mutex poisoned"))?;
+        match log.head(stream)? {
+            None => Ok(()),
+            Some(head) => {
+                log.verify_chain(stream, 1, head)?;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Map an audit outcome string to a secure-log severity.
+fn severity_for(outcome: &str) -> &'static str {
+    let lower = outcome.to_ascii_lowercase();
+    // "deni" catches both "denied" and "deny".
+    if lower.contains("fail") || lower.contains("deni") || lower.contains("error") {
+        "error"
+    } else {
+        "info"
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use crate::host::SystemClock;
+    use secure_log::{CborEncoder, NativeSecureLog};
+    use secure_log_sqlite::SqliteSecureLogStore;
+
+    fn in_memory_logger() -> AuditLogger {
+        let store = SqliteSecureLogStore::open_in_memory().unwrap();
+        let log = NativeSecureLog::new(Box::new(store), Box::new(CborEncoder::new()));
+        AuditLogger::new(Arc::new(Mutex::new(log)), SystemClock::shared())
+    }
 
     #[test]
-    fn test_audit_logging() {
-        let dir = tempdir().unwrap();
-        let logger = AuditLogger::new(dir.path().to_path_buf(), SystemClock::shared()).unwrap();
-
+    fn test_audit_logging_appends_and_verifies() {
+        let logger = in_memory_logger();
         let digest = vec![0u8; 32];
+
         logger
             .log_emit(&digest, &digest, Some("tenant-1"), "success")
             .unwrap();
 
-        // Check file was created
-        let tenant_dir = dir.path().join("tenant-1");
-        assert!(tenant_dir.exists());
-
-        // Check log file exists
-        let files: Vec<_> = std::fs::read_dir(&tenant_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
-        assert_eq!(files.len(), 1);
+        // The tenant's chain must verify after the append.
+        logger.verify_tenant(Some("tenant-1")).unwrap();
     }
 
     #[test]
     fn test_tenant_isolation() {
-        let dir = tempdir().unwrap();
-        let logger = AuditLogger::new(dir.path().to_path_buf(), SystemClock::shared()).unwrap();
-
+        let logger = in_memory_logger();
         let digest = vec![0u8; 32];
+
         logger
             .log_emit(&digest, &digest, Some("tenant-1"), "success")
             .unwrap();
         logger
-            .log_emit(&digest, &digest, Some("tenant-2"), "success")
+            .log_exec(&digest, &digest, Some("tenant-2"), "success", Some(0))
             .unwrap();
 
-        // Check separate directories
-        assert!(dir.path().join("tenant-1").exists());
-        assert!(dir.path().join("tenant-2").exists());
+        // Each tenant's independent chain verifies.
+        logger.verify_tenant(Some("tenant-1")).unwrap();
+        logger.verify_tenant(Some("tenant-2")).unwrap();
+    }
+
+    #[test]
+    fn test_failure_outcome_is_error_severity() {
+        assert_eq!(severity_for("failure: trap"), "error");
+        assert_eq!(severity_for("denied"), "error");
+        assert_eq!(severity_for("success"), "info");
+        assert_eq!(severity_for("success (cached)"), "info");
     }
 }

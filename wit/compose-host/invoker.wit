@@ -1,0 +1,62 @@
+package compose:host@0.1.0;
+
+/// Long-lived instances and typed-export invocation.
+///
+/// `runner` handles the CLI shape (instantiate → run → done) without
+/// exposing instance handles to the orchestrator. `invoker` is for the
+/// less common case where the orchestrator wants to keep an instance
+/// alive across multiple export calls (the `compose exec invoke` and
+/// `compose exec serve-http` paths in the current Rust orchestrator).
+///
+/// Status: provisional. The component model can express the resource
+/// handle and the named-export lookup, but it cannot yet express
+/// "call a function whose parameter and result types are determined by
+/// the component itself" — that would require runtime polymorphism
+/// over the canonical ABI. Until that gap closes, `call-with-cbor` is
+/// the pragmatic workaround: both sides agree to encode their typed
+/// arguments / results as canonical CBOR, and the host performs no
+/// schema-aware coercion. Implementations of structured invocation
+/// should be added here only when the component-model design lands.
+interface invoker {
+    use runner.{exec-error, limits};
+
+    /// Opaque handle to an instantiated, live component.
+    ///
+    /// The instance owns its `Store` on the host side; dropping the
+    /// resource releases the store and any linear memory it held.
+    resource instance {
+        /// Look up a typed export by name. Returns `none` if absent.
+        ///
+        /// The returned `u32` is an opaque host-assigned identifier
+        /// usable with `call-with-cbor`; the orchestrator MUST NOT
+        /// interpret it.
+        get-export: func(name: string) -> option<u32>;
+
+        /// List every exported function this instance offers, in
+        /// declaration order. Useful for reflection (`describe-export`
+        /// in the orchestrator's outward API).
+        list-exports: func() -> list<string>;
+
+        /// Invoke a previously-located export.
+        ///
+        /// `args-cbor` MUST be canonical CBOR encoding the function's
+        /// argument list as a single array. The host decodes it via
+        /// the component's type information, calls the export, and
+        /// re-encodes the results as canonical CBOR.
+        ///
+        /// This is a stop-gap until the component model can express
+        /// polymorphic value passing through WIT directly.
+        call-with-cbor: func(
+            export-id: u32,
+            args-cbor: list<u8>,
+        ) -> result<list<u8>, exec-error>;
+    }
+
+    /// Instantiate `component-bytes` and return a handle. The host
+    /// satisfies the same WASI surface as `runner.run-cli`; any
+    /// unmet import is reported as `missing-import`.
+    instantiate: func(
+        component-bytes: list<u8>,
+        limits: limits,
+    ) -> result<instance, exec-error>;
+}

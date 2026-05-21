@@ -1,0 +1,88 @@
+package compose:host@0.1.0;
+
+/// Component runner — the irreducible host capability.
+///
+/// Everything else the orchestrator does (plan validation, composition,
+/// policy enforcement, blob CAS, audit, trust, secret token issuance) is
+/// pure logic that the orchestrator wasm performs itself using standard
+/// WASI imports for filesystem, time, and randomness. This interface
+/// exists because dynamic component instantiation has no WASI analog —
+/// only the native host owns a wasm engine.
+///
+/// The orchestrator hands the host raw component bytes plus
+/// instantiation parameters; the host wires WASI into its linker,
+/// instantiates the component, runs it, and reports the result. The
+/// instance lifetime is scoped to the call: no instance handles leak
+/// back to the orchestrator. (See `invoker` in this package for the
+/// long-lived-instance case once the component model can express it
+/// cleanly.)
+interface runner {
+    /// Captured I/O and exit status from a single CLI execution.
+    record exec-result {
+        /// Exit code reported by the guest (0 = success).
+        exit-code: u32,
+        /// Bytes written to stdout by the guest.
+        stdout: list<u8>,
+        /// Bytes written to stderr by the guest.
+        stderr: list<u8>,
+    }
+
+    /// Resource limits the host should enforce while running the
+    /// guest. `none` = no limit beyond whatever the host's default
+    /// policy enforces.
+    record limits {
+        /// Maximum CPU time in milliseconds.
+        cpu-ms: option<u64>,
+        /// Maximum linear-memory bytes the guest may allocate.
+        memory-bytes: option<u64>,
+        /// Wall-clock timeout in milliseconds (the host MUST trap the
+        /// guest if it exceeds this).
+        timeout-ms: option<u64>,
+        /// Maximum bytes the guest may write to stdout / stderr
+        /// (truncated thereafter; the host MUST NOT trap on overflow).
+        stdio-buffer-bytes: option<u64>,
+    }
+
+    /// Reasons a `run-cli` call may fail before completing.
+    variant exec-error {
+        /// Component bytes are malformed or fail wasm validation.
+        invalid-component(string),
+        /// The component imports something this host does not provide.
+        /// The string names the unsatisfied import (e.g.
+        /// `wasi:http/incoming-handler@0.2.1`).
+        missing-import(string),
+        /// Guest trapped during execution. The string is the host's
+        /// human-readable trap message.
+        trap(string),
+        /// A configured limit was exceeded.
+        limit-exceeded(string),
+        /// Wall-clock timeout was exceeded.
+        timed-out,
+        /// Some other host-side failure (engine error, I/O, internal).
+        host-error(string),
+    }
+
+    /// Instantiate `component-bytes` as a WASI CLI component, call its
+    /// `wasi:cli/run.run` export, and return the captured result.
+    ///
+    /// The host MUST link the standard `wasi:cli`, `wasi:filesystem`,
+    /// `wasi:clocks`, `wasi:random`, `wasi:io`, and `wasi:sockets`
+    /// interfaces into the guest's linker; any unsatisfied import is
+    /// reported as `missing-import`. The host MUST NOT add interfaces
+    /// outside the WASI standard set without explicit configuration
+    /// (otherwise determinism guarantees break).
+    ///
+    /// `stdin` is presented to the guest as a memory pipe; an empty
+    /// list means "no stdin available."
+    ///
+    /// The instance and its store are dropped before this call returns;
+    /// stdout/stderr buffers reflect the full captured output up to
+    /// `limits.stdio-buffer-bytes`.
+    run-cli: func(
+        component-bytes: list<u8>,
+        args: list<string>,
+        env: list<tuple<string, string>>,
+        stdin: list<u8>,
+        limits: limits,
+    ) -> result<exec-result, exec-error>;
+}

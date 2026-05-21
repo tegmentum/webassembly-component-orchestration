@@ -1,0 +1,36 @@
+package compose:host@0.1.0;
+
+/// Host fingerprint and capability discovery.
+///
+/// The orchestrator's `exec-key` includes a hash of the host
+/// fingerprint so cached execution results are invalidated whenever
+/// the host changes in a way that could affect determinism (engine
+/// version, SIMD support, optimization level, etc.). Without this
+/// data the orchestrator cannot honour its determinism contract on
+/// behalf of guest components.
+interface runtime-info {
+    /// Fingerprint of the host runtime. The orchestrator MUST mix
+    /// this into its `exec-key` derivation; any change MUST produce a
+    /// different cache key.
+    record fingerprint {
+        /// Implementation name (e.g. "wasmtime", "wasmer", "jco").
+        runtime-name: string,
+        /// Implementation version (e.g. "44.0.1").
+        runtime-version: string,
+        /// Stable hash of the host's enabled engine features
+        /// (SIMD, threads, GC, component-model version, etc.).
+        engine-features-hash: list<u8>,
+        /// Target triple the host runs on (e.g. "aarch64-apple-darwin").
+        host-target: string,
+    }
+
+    /// Return the host's fingerprint. The host MUST return the same
+    /// fingerprint across calls within a single process lifetime.
+    get-fingerprint: func() -> fingerprint;
+
+    /// List the WIT interfaces this host can satisfy when linking a
+    /// guest component (e.g. `wasi:cli/run@0.2.0`, `wasi:http/...`).
+    /// Used by the orchestrator's policy enforcement to deny plans
+    /// that require interfaces this host does not provide.
+    supported-imports: func() -> list<string>;
+}

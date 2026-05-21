@@ -1,0 +1,57 @@
+package compose:host@0.1.0;
+
+/// The capability set the native host provides to the orchestrator
+/// when the orchestrator is itself a wasm component.
+///
+/// The orchestrator imports this world. The native host implements
+/// it on top of its embedded wasm engine (today: wasmtime; tomorrow:
+/// any embedder that can satisfy this interface).
+///
+/// Everything else the orchestrator needs from its environment —
+/// filesystem for the blob CAS / audit log / emit cache / trust
+/// metadata, wall-clock and monotonic time, randomness, network for
+/// trust backends like SigStore — comes through standard WASI
+/// interfaces (`wasi:filesystem`, `wasi:clocks`, `wasi:random`,
+/// `wasi:http`) which any wasm runtime already provides. Those do
+/// NOT need to be redeclared here.
+world host {
+    import runner;
+    import invoker;
+    import runtime-info;
+}
+
+/// World implemented by the wasm-orchestrator component itself.
+///
+/// This world is documentation-only at this layer of the spec —
+/// the orchestrator component, when it is actually built, will
+/// declare its full world (including the standard WASI imports
+/// below) via `wit-deps` against vendored copies of `wasi:*` and
+/// `sys:compose`.
+///
+/// Imports:
+/// - `compose:host/runner`, `compose:host/invoker`,
+///   `compose:host/runtime-info` (this package)
+/// - `wasi:filesystem/{types,preopens}@0.2.0` — for blob CAS,
+///   audit log, emit cache, trust metadata
+/// - `wasi:clocks/{wall-clock,monotonic-clock}@0.2.0` — for
+///   timestamps and token TTL evaluation
+/// - `wasi:random/random@0.2.0` — for token id generation
+/// - `wasi:io/streams@0.2.0` — used by wasi:filesystem
+/// - `wasi:http/outgoing-handler@0.2.0` (optional) — for the
+///   SigStore / Rekor / Vault trust backends
+///
+/// Exports the existing `sys:compose@1.0.0` interfaces (`plan`,
+/// `emit`, `exec`, `blobs`, `trust`, `events`). With this world
+/// the orchestrator becomes substitutable across hosts: any
+/// embedder that implements `compose:host` plus standard WASI can
+/// run the same orchestrator wasm and get identical behaviour.
+///
+/// Implementation of each export is the pure-Rust code already
+/// living in `libs/compose-core`, behind a thin `wit-bindgen`
+/// adapter that translates the canonical-ABI calls into the
+/// `compose-core` Rust API.
+world orchestrator {
+    import runner;
+    import invoker;
+    import runtime-info;
+}

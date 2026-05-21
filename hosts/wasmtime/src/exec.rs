@@ -14,11 +14,14 @@ use wasmtime::{
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView, WasiCtxView};
 use wasmtime_wasi::p2::bindings::sync::Command;
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
+use wasmtime_wasi_nn::wit::{WasiNnCtx, WasiNnView};
+use wasmtime_wasi_nn::InMemoryRegistry;
 
 /// Host state for WASI execution
 struct HostState {
     wasi_ctx: WasiCtx,
     wasi_table: ResourceTable,
+    wasi_nn_ctx: WasiNnCtx,
 }
 
 impl WasiView for HostState {
@@ -229,11 +232,23 @@ impl ExecHandler {
             )
         })?;
 
+        // Add wasi-nn support to linker
+        wasmtime_wasi_nn::wit::add_to_linker(&mut linker, |state: &mut HostState| {
+            WasiNnView::new(&mut state.wasi_table, &mut state.wasi_nn_ctx)
+        })
+        .map_err(|e| {
+            Error::new(
+                ErrorCode::InternalError,
+                format!("failed to add wasi-nn to linker: {}", e),
+            )
+        })?;
+
         // Build minimal WASI context
         let wasi_ctx = WasiCtxBuilder::new().build();
         let host_state = HostState {
             wasi_ctx,
             wasi_table: ResourceTable::new(),
+            wasi_nn_ctx: WasiNnCtx::new([], InMemoryRegistry::new().into()),
         };
 
         // Create a store
@@ -269,7 +284,7 @@ impl ExecHandler {
         };
 
         // Prepare results buffer
-        let mut results = vec![wasmtime::component::Val::Bool(false); func.results(&store).len()];
+        let mut results = vec![wasmtime::component::Val::Bool(false); func.ty(&store).results().len()];
 
         // Call the function
         func.call(&mut store, &params, &mut results).map_err(|e| {
@@ -375,6 +390,17 @@ impl ExecHandler {
             )
         })?;
 
+        // Add wasi-nn support to linker
+        wasmtime_wasi_nn::wit::add_to_linker(&mut linker, |state: &mut HostState| {
+            WasiNnView::new(&mut state.wasi_table, &mut state.wasi_nn_ctx)
+        })
+        .map_err(|e| {
+            Error::new(
+                ErrorCode::InternalError,
+                format!("failed to add wasi-nn to linker: {}", e),
+            )
+        })?;
+
         // Capture stdout and stderr
         let stdout = MemoryOutputPipe::new(4096);
         let stderr = MemoryOutputPipe::new(4096);
@@ -398,6 +424,7 @@ impl ExecHandler {
         let host_state = HostState {
             wasi_ctx,
             wasi_table: ResourceTable::new(),
+            wasi_nn_ctx: WasiNnCtx::new([], InMemoryRegistry::new().into()),
         };
 
         // Create a store with the host state

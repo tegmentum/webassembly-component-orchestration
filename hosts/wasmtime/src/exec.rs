@@ -2,7 +2,7 @@
 use compose_core::audit::AuditLogger;
 use compose_core::emit::EmitHandler;
 use compose_core::events::EventCollector;
-use compose_core::host::SharedBlobs;
+use compose_core::blobs::BlobStore;
 use compose_core::metrics::{MetricLabel, MetricsCollector};
 use compose_core::policy::PolicyEnforcer;
 use compose_core::types::{Digest, Error, ErrorCode, ExecResult, ExportInfo, HttpRequest, HttpResponse, PlanV1};
@@ -33,7 +33,7 @@ impl WasiView for HostState {
 /// Exec handler for execution and reflection
 pub struct ExecHandler {
     engine: Engine,
-    blobs: SharedBlobs,
+    blobs: BlobStore,
     emit: EmitHandler,
     events: EventCollector,
     cache_dir: PathBuf,
@@ -46,7 +46,7 @@ impl ExecHandler {
     /// Create a new exec handler
     pub fn new(
         engine: Engine,
-        blobs: SharedBlobs,
+        blobs: BlobStore,
         emit: EmitHandler,
         events: EventCollector,
         cache_dir: PathBuf,

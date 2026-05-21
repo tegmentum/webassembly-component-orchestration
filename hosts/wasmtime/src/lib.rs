@@ -16,15 +16,13 @@ pub use compose_core::{
     attest, audit, blobs, emit, events, host, limits, metrics, plan, policy, secrets, trust, types,
 };
 pub use compose_core::{
-    AttestationService, AuditLogger, BlobStorage, BlobStore, EnforcedPolicy, EventCollector,
-    HostPolicy, MetricsCollector, PlanValidator, PolicyEnforcer, SecretManager, SharedBlobs,
-    SharedClock, SystemClock,
+    AttestationService, AuditLogger, BlobStore, EnforcedPolicy, EventCollector, HostPolicy,
+    MetricsCollector, PlanValidator, PolicyEnforcer, SecretManager, SharedClock, SystemClock,
 };
 pub use compose_core::types::*;
 
 use anyhow::Result;
 use std::path::PathBuf;
-use std::sync::Arc;
 use wasmtime::Engine;
 
 /// Compositor host configuration
@@ -58,7 +56,7 @@ impl Default for HostConfig {
 pub struct CompositorHost {
     pub config: HostConfig,
     pub engine: Engine,
-    pub blobs: SharedBlobs,
+    pub blobs: BlobStore,
     pub events: EventCollector,
     pub secrets: SecretManager,
     pub policy_enforcer: PolicyEnforcer,
@@ -82,14 +80,12 @@ impl CompositorHost {
         wasmtime_config.wasm_component_model(true);
         let engine = Engine::new(&wasmtime_config)?;
 
-        // The host satisfies the orchestrator's `Clock` and `BlobStorage`
-        // capabilities using std-based implementations. When the orchestrator
-        // moves into a wasm component, these wires become WIT imports.
+        // The host satisfies the orchestrator's clock capability using a
+        // std-based implementation. Filesystem (the blob CAS, audit log,
+        // emit cache, trust metadata) lowers to wasi:filesystem when the
+        // orchestrator runs as wasm — no Rust-level abstraction needed.
         let clock: SharedClock = SystemClock::shared();
-        let blobs: SharedBlobs = Arc::new(BlobStore::new(
-            config.blob_dir.clone(),
-            config.max_blob_size,
-        )?);
+        let blobs = BlobStore::new(config.blob_dir.clone(), config.max_blob_size)?;
 
         let events = EventCollector::new(clock.clone());
         let secrets = SecretManager::new(clock.clone());

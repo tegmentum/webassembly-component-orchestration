@@ -1,5 +1,9 @@
-/// File-backed content-addressed storage (CAS) for blobs
-use crate::host::BlobStorage;
+/// File-backed content-addressed storage (CAS) for blobs.
+///
+/// When compose-core compiles to wasm32-wasip2 these std::fs calls are
+/// lowered to wasi:filesystem imports by libstd, so the same code runs
+/// whether the orchestrator is the embedded Rust library or a wasm
+/// component.
 use crate::types::{Digest, Error, ErrorCode};
 use anyhow::Result;
 use sha2::{Digest as Sha2Digest, Sha256};
@@ -152,31 +156,6 @@ impl BlobStore {
     }
 }
 
-impl BlobStorage for BlobStore {
-    fn put(&self, bytes: &[u8]) -> Result<Digest, Error> {
-        BlobStore::put(self, bytes)
-    }
-
-    fn get(&self, digest: &Digest) -> Result<Vec<u8>, Error> {
-        BlobStore::get(self, digest)
-    }
-
-    fn has(&self, digest: &Digest) -> bool {
-        BlobStore::has(self, digest)
-    }
-
-    fn size(&self, digest: &Digest) -> Option<u64> {
-        BlobStore::size(self, digest)
-    }
-
-    fn delete(&self, digest: &Digest) -> Result<(), Error> {
-        BlobStore::delete(self, digest)
-    }
-
-    fn list_all(&self) -> Vec<Digest> {
-        BlobStore::list_all(self)
-    }
-}
 
 /// Compute SHA-256 digest of bytes
 pub fn compute_digest(bytes: &[u8]) -> Digest {

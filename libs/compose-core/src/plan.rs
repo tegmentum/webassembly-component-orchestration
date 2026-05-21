@@ -1,17 +1,16 @@
 /// Plan serialization, deserialization, and validation
-use crate::blobs::compute_digest;
-use crate::host::SharedBlobs;
+use crate::blobs::{compute_digest, BlobStore};
 use crate::types::{Digest, Error, ErrorCode, PlanV1};
 use std::collections::{HashMap, HashSet};
 
 /// Plan validator with incremental validation pipeline
 pub struct PlanValidator {
-    blobs: SharedBlobs,
+    blobs: BlobStore,
 }
 
 impl PlanValidator {
     /// Create a new plan validator
-    pub fn new(blobs: SharedBlobs) -> Self {
+    pub fn new(blobs: BlobStore) -> Self {
         Self { blobs }
     }
 
@@ -233,9 +232,7 @@ impl PlanValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blobs::BlobStore;
     use crate::types::{ComponentSpec, ImportBinding, Policy, SecretBinding};
-    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn create_test_plan() -> PlanV1 {
@@ -256,7 +253,7 @@ mod tests {
     #[test]
     fn test_serialize_deserialize() {
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let validator = PlanValidator::new(blobs);
 
         let plan = create_test_plan();
@@ -270,7 +267,7 @@ mod tests {
     #[test]
     fn test_validate_schema() {
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let validator = PlanValidator::new(blobs);
 
         let mut plan = create_test_plan();

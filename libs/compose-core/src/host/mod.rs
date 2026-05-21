@@ -1,18 +1,15 @@
 //! Host capability traits.
 //!
 //! These traits define the surface that the orchestrator core needs from
-//! the surrounding runtime. Today every consumer is a Rust struct holding an
-//! `Arc<dyn Trait>`; when the orchestrator eventually moves into a wasm
-//! component, these same traits become its imported WIT world.
+//! the surrounding runtime — specifically, the things that don't already
+//! have a WASI analog and therefore can't be satisfied implicitly by the
+//! wasm target.
 //!
-//! Each trait here represents one well-bounded capability:
-//!
-//! - [`Clock`] — wall-clock time, for timestamps and TTL evaluation.
-//! - [`BlobStorage`] — content-addressed storage for components and plans.
-//!
-//! Concrete implementations live alongside the trait or in host crates.
-pub mod blob_storage;
+//! Today the only such surface is the wall clock (used for timestamps,
+//! TTL evaluation, and deterministic tests). Everything else compose-core
+//! needs from its environment — filesystem (blob CAS, audit log, emit
+//! cache, trust metadata), randomness, network — arrives via standard
+//! WASI imports when the orchestrator compiles to wasm32-wasip2.
 pub mod clock;
 
-pub use blob_storage::{BlobStorage, SharedBlobs};
 pub use clock::{Clock, ManualClock, SharedClock, SystemClock};

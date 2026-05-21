@@ -1,6 +1,6 @@
 /// Composition and artifact emission using wasm-tools
+use crate::blobs::BlobStore;
 use crate::events::EventCollector;
-use crate::host::SharedBlobs;
 use crate::plan::PlanValidator;
 use crate::types::{CompositionResult, Digest, Error, ErrorCode, PlanV1};
 use std::collections::HashMap;
@@ -11,14 +11,14 @@ use wasm_compose::config::BytesConfig;
 
 /// Emit handler for composition
 pub struct EmitHandler {
-    blobs: SharedBlobs,
+    blobs: BlobStore,
     events: EventCollector,
     cache_dir: PathBuf,
 }
 
 impl EmitHandler {
     /// Create a new emit handler
-    pub fn new(blobs: SharedBlobs, events: EventCollector, cache_dir: PathBuf) -> Self {
+    pub fn new(blobs: BlobStore, events: EventCollector, cache_dir: PathBuf) -> Self {
         Self {
             blobs,
             events,
@@ -309,9 +309,7 @@ impl EmitHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blobs::BlobStore;
     use crate::types::{ComponentSpec, Policy};
-    use std::sync::Arc;
     use tempfile::tempdir;
 
     /// Create a minimal valid WebAssembly component for testing
@@ -328,7 +326,7 @@ mod tests {
     #[test]
     fn test_emit_key_computation() {
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let events = EventCollector::default();
         let cache_dir = dir.path().join("cache");
         let emit = EmitHandler::new(blobs, events, cache_dir);
@@ -357,7 +355,7 @@ mod tests {
     #[test]
     fn test_single_component_composition() {
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let events = EventCollector::default();
         let cache_dir = dir.path().join("cache");
         let emit = EmitHandler::new(blobs.clone(), events, cache_dir);
@@ -390,7 +388,7 @@ mod tests {
     #[test]
     fn test_composition_with_missing_blob() {
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let events = EventCollector::default();
         let cache_dir = dir.path().join("cache");
         let emit = EmitHandler::new(blobs, events, cache_dir);
@@ -420,7 +418,7 @@ mod tests {
     #[test]
     fn test_composition_cache() {
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let events = EventCollector::default();
         let cache_dir = dir.path().join("cache");
         let emit = EmitHandler::new(blobs.clone(), events, cache_dir);
@@ -458,7 +456,7 @@ mod tests {
         use crate::types::ImportBinding;
 
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let events = EventCollector::default();
         let cache_dir = dir.path().join("cache");
         let emit = EmitHandler::new(blobs.clone(), events, cache_dir);
@@ -522,7 +520,7 @@ mod tests {
     #[test]
     fn test_validate_component() {
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let events = EventCollector::default();
         let cache_dir = dir.path().join("cache");
         let emit = EmitHandler::new(blobs, events, cache_dir);
@@ -539,7 +537,7 @@ mod tests {
     #[test]
     fn test_get_artifact() {
         let dir = tempdir().unwrap();
-        let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap());
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
         let events = EventCollector::default();
         let cache_dir = dir.path().join("cache");
         let emit = EmitHandler::new(blobs.clone(), events, cache_dir);

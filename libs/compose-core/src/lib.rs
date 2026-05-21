@@ -26,7 +26,7 @@ pub use attest::AttestationService;
 pub use audit::AuditLogger;
 pub use blobs::BlobStore;
 pub use events::EventCollector;
-pub use host::{BlobStorage, Clock, SharedBlobs, SharedClock, SystemClock};
+pub use host::{Clock, SharedClock, SystemClock};
 pub use metrics::MetricsCollector;
 pub use plan::PlanValidator;
 pub use policy::{EnforcedPolicy, HostPolicy, PolicyEnforcer};

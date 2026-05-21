@@ -1,6 +1,8 @@
 /// PKCS#11 secret backend using WIT-based adapter
 /// Interfaces with hardware security modules and smart cards via the pkcs11-host-adapter
-use super::*;
+use compose_core::secrets::{
+    SecretBackend, SecretError, SecretId, SecretMetadata,
+};
 
 #[cfg(feature = "pkcs11")]
 use pkcs11_host_adapter::{

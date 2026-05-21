@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub mod dev;
-#[cfg(feature = "pkcs11")]
-pub mod pkcs11;
 
 /// Secret identifier
 pub type SecretId = String;

@@ -1,27 +1,24 @@
-/// Reference host implementation for sys:compose using Wasmtime
-pub mod attest;
-pub mod audit;
-pub mod blobs;
-pub mod emit;
-pub mod events;
+//! Reference host implementation for `sys:compose` on Wasmtime.
+//!
+//! The portable orchestrator logic (plans, composition, policy, trust,
+//! secrets, audit, attestation, metrics, events, blob CAS) lives in the
+//! [`compose_core`] crate. This crate adds the wasmtime-specific runtime
+//! glue — engine setup, component instantiation via `exec` — plus the
+//! pkcs11 secret backend, which depends on the wasmtime-backed adapter.
 pub mod exec;
-pub mod limits;
-pub mod metrics;
-pub mod plan;
-pub mod policy;
-pub mod secrets;
-pub mod trust;
-pub mod types;
+#[cfg(feature = "pkcs11")]
+pub mod pkcs11_backend;
 
-pub use attest::AttestationService;
-pub use audit::AuditLogger;
-pub use blobs::BlobStore;
-pub use events::EventCollector;
-pub use metrics::MetricsCollector;
-pub use plan::PlanValidator;
-pub use policy::{EnforcedPolicy, HostPolicy, PolicyEnforcer};
-pub use secrets::SecretManager;
-pub use types::*;
+// Re-export the portable core so downstream consumers
+// (composectl, conformance/runner) keep working unchanged.
+pub use compose_core::{
+    attest, audit, blobs, emit, events, limits, metrics, plan, policy, secrets, trust, types,
+};
+pub use compose_core::{
+    AttestationService, AuditLogger, BlobStore, EnforcedPolicy, EventCollector, HostPolicy,
+    MetricsCollector, PlanValidator, PolicyEnforcer, SecretManager,
+};
+pub use compose_core::types::*;
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -87,7 +84,7 @@ impl CompositorHost {
         let secrets = SecretManager::new();
 
         // Register dev backend by default with some test secrets
-        let dev_backend = secrets::dev::DevBackend::new();
+        let dev_backend = compose_core::secrets::dev::DevBackend::new();
         // Add test secrets for demos
         dev_backend.add_secret("api-key", b"super-secret-key-12345");
         dev_backend.add_secret("db-password", b"p@ssw0rd!");
@@ -125,7 +122,7 @@ impl CompositorHost {
 
     /// Get an exec handler for this host
     pub fn exec_handler(&self) -> exec::ExecHandler {
-        let emit_handler = emit::EmitHandler::new(
+        let emit_handler = compose_core::emit::EmitHandler::new(
             self.blobs.clone(),
             self.events.clone(),
             self.config.cache_dir.clone(),

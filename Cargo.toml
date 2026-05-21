@@ -5,6 +5,7 @@ members = [
     "conformance/runner",
     "examples/hello-cli",
     "examples/hello-http",
+    "libs/compose-core",
     "libs/pkcs11-host-adapter",
 ]
 resolver = "2"

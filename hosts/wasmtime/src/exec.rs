@@ -1,11 +1,11 @@
 /// Execution and reflection APIs
-use crate::audit::AuditLogger;
-use crate::blobs::BlobStore;
-use crate::emit::EmitHandler;
-use crate::events::EventCollector;
-use crate::metrics::{MetricLabel, MetricsCollector};
-use crate::policy::PolicyEnforcer;
-use crate::types::{Digest, Error, ErrorCode, ExecResult, ExportInfo, HttpRequest, HttpResponse, PlanV1};
+use compose_core::audit::AuditLogger;
+use compose_core::blobs::BlobStore;
+use compose_core::emit::EmitHandler;
+use compose_core::events::EventCollector;
+use compose_core::metrics::{MetricLabel, MetricsCollector};
+use compose_core::policy::PolicyEnforcer;
+use compose_core::types::{Digest, Error, ErrorCode, ExecResult, ExportInfo, HttpRequest, HttpResponse, PlanV1};
 use std::path::PathBuf;
 use wasmtime::{
     component::{Component, Linker},
@@ -480,7 +480,7 @@ impl ExecHandler {
     fn compute_exec_key(&self, plan: &PlanV1, artifact_digest: &Digest) -> Result<Digest, Error> {
         use sha2::{Digest as Sha2Digest, Sha256};
 
-        let plan_validator = crate::plan::PlanValidator::new(self.blobs.clone());
+        let plan_validator = compose_core::plan::PlanValidator::new(self.blobs.clone());
         let plan_bytes = plan_validator.serialize(plan)?;
 
         let mut hasher = Sha256::new();
@@ -515,14 +515,14 @@ impl ExecHandler {
     }
 
     /// Serialize policy to bytes for fingerprinting
-    fn serialize_policy_fingerprint(&self, policy: &crate::types::Policy) -> Vec<u8> {
+    fn serialize_policy_fingerprint(&self, policy: &compose_core::types::Policy) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         // Determinism mode
         bytes.push(match policy.determinism {
-            crate::types::DeterminismMode::Strict => 0,
-            crate::types::DeterminismMode::Audit => 1,
-            crate::types::DeterminismMode::Relaxed => 2,
+            compose_core::types::DeterminismMode::Strict => 0,
+            compose_core::types::DeterminismMode::Audit => 1,
+            compose_core::types::DeterminismMode::Relaxed => 2,
         });
 
         // Capabilities (sorted for determinism)
@@ -538,7 +538,7 @@ impl ExecHandler {
 
     /// Compute plan digest for audit logging
     fn compute_plan_digest(&self, plan: &PlanV1) -> Result<Digest, Error> {
-        let plan_validator = crate::plan::PlanValidator::new(self.blobs.clone());
+        let plan_validator = compose_core::plan::PlanValidator::new(self.blobs.clone());
         plan_validator.compute_digest(plan)
     }
 

@@ -16,4 +16,15 @@ interface smoke {
     /// genuinely compiles and runs as part of the orchestrator
     /// component, not just as a Rust library on the native host.
     digest: func(bytes: list<u8>) -> list<u8>;
+
+    /// Write `count` audit entries for a tenant through compose-core's
+    /// AuditLogger, backed by the composed secure-log component (via
+    /// the imported `secure-log:log/log`), then verify the tenant's
+    /// hash chain. Returns the head sequence number on success.
+    ///
+    /// Proves end-to-end that the wasm orchestrator drives a
+    /// tamper-evident audit log through component composition — the
+    /// same AuditLogger code that runs natively, over a WIT-imported
+    /// secure-log backend.
+    audit-demo: func(tenant: string, count: u32) -> result<u64, string>;
 }

@@ -14,10 +14,15 @@ use std::path::PathBuf;
 
 use compose_host_wasmtime::compose_host;
 
-/// The orchestrator crate is `exclude`d from the workspace because it
-/// builds for `wasm32-wasip2`, so its artifacts land in a crate-local
-/// `target/` rather than the workspace one.
-fn orchestrator_wasm_path() -> PathBuf {
+/// The composed orchestrator artifact: the orchestrator wac-plugged
+/// with the secure-log component, produced by build.sh's wac plug
+/// step. All tests use this because the raw orchestrator now imports
+/// secure-log:log/log, which only the composition satisfies — the raw
+/// artifact can't instantiate standalone.
+///
+/// The orchestrator crate is `exclude`d from the workspace (it targets
+/// wasm32-wasip2), so its artifacts land in a crate-local `target/`.
+fn composed_orchestrator_wasm_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .join("..")
@@ -27,28 +32,32 @@ fn orchestrator_wasm_path() -> PathBuf {
         .join("target")
         .join("wasm32-wasip2")
         .join("release")
-        .join("compose_orchestrator_wasm.wasm")
+        .join("compose_orchestrator_composed.wasm")
 }
 
-fn load_wasm_or_skip() -> Option<(wasmtime::Engine, Vec<u8>)> {
-    let wasm_path = orchestrator_wasm_path();
-    let wasm = match std::fs::read(&wasm_path) {
-        Ok(bytes) => bytes,
+fn engine() -> wasmtime::Engine {
+    let mut config = wasmtime::Config::new();
+    config.wasm_component_model(true);
+    wasmtime::Engine::new(&config).expect("wasmtime engine")
+}
+
+fn load_or_skip(path: PathBuf) -> Option<(wasmtime::Engine, Vec<u8>)> {
+    match std::fs::read(&path) {
+        Ok(bytes) => Some((engine(), bytes)),
         Err(e) => {
             eprintln!(
                 "skipping orchestrator integration test: {} not found ({})\n\
                  run `libs/compose-orchestrator-wasm/build.sh` first to enable it",
-                wasm_path.display(),
+                path.display(),
                 e
             );
-            return None;
+            None
         }
-    };
+    }
+}
 
-    let mut config = wasmtime::Config::new();
-    config.wasm_component_model(true);
-    let engine = wasmtime::Engine::new(&config).expect("wasmtime engine");
-    Some((engine, wasm))
+fn load_wasm_or_skip() -> Option<(wasmtime::Engine, Vec<u8>)> {
+    load_or_skip(composed_orchestrator_wasm_path())
 }
 
 /// Round trip: native → wasm export → wasm's host import → native.
@@ -198,4 +207,26 @@ fn plan_validate_fails_when_blob_missing() {
         !code_dbg.contains("InternalError"),
         "validate should report a domain-specific code, not InternalError: {err:?}"
     );
+}
+
+/// Full end-to-end audit through component composition: the wasm
+/// orchestrator (wac-plugged with the secure-log component) appends
+/// audit entries via compose-core's AuditLogger over the imported
+/// secure-log:log backend, then verifies the tenant's hash chain.
+///
+/// This is the strongest claim in the suite: the *same* AuditLogger
+/// code that writes SQLite-backed audit on the native host runs here
+/// inside the wasm sandbox over a composed, tamper-evident secure-log
+/// component, and the chain verifies. Uses the composed artifact.
+#[test]
+fn audit_demo_writes_and_verifies_tamper_evident_chain() {
+    let Some((engine, wasm)) = load_or_skip(composed_orchestrator_wasm_path()) else {
+        return;
+    };
+
+    let head = compose_host::run_audit_demo(&engine, &wasm, "tenant-x", 3)
+        .expect("audit-demo should append + verify a tamper-evident chain");
+
+    // Three entries appended to an empty in-memory store ⇒ head seqno 3.
+    assert_eq!(head, 3, "expected 3 audit entries in the verified chain");
 }

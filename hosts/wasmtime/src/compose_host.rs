@@ -235,6 +235,35 @@ pub fn run_smoke(engine: &Engine, orchestrator_wasm: &[u8]) -> Result<String> {
         .ctx("orchestrator smoke.host-name call failed")
 }
 
+/// Load a *composed* orchestrator component (orchestrator wac-plugged
+/// with the secure-log component) and call its
+/// `compose:host/smoke.audit-demo` export.
+///
+/// The orchestrator appends `count` audit entries for `tenant` through
+/// compose-core's AuditLogger — backed inside the wasm sandbox by the
+/// composed secure-log component — then verifies the tenant's hash
+/// chain and returns the head sequence number. A successful call
+/// proves tamper-evident audit works end-to-end from the wasm
+/// orchestrator via component composition.
+///
+/// Requires the *composed* artifact (compose_orchestrator_composed.wasm).
+/// The raw orchestrator alone leaves secure-log:log/log unsatisfied and
+/// will fail to instantiate.
+pub fn run_audit_demo(
+    engine: &Engine,
+    composed_orchestrator_wasm: &[u8],
+    tenant: &str,
+    count: u32,
+) -> Result<u64> {
+    let (mut store, orchestrator) =
+        instantiate_orchestrator(engine, composed_orchestrator_wasm, None)?;
+    orchestrator
+        .compose_host_smoke()
+        .call_audit_demo(&mut store, tenant, count)
+        .ctx("orchestrator smoke.audit-demo call failed")?
+        .map_err(|e| anyhow::anyhow!("audit-demo returned error: {e}"))
+}
+
 /// Load an orchestrator component and call its `compose:host/smoke.digest`
 /// export with the given bytes.
 ///

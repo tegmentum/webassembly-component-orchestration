@@ -54,6 +54,14 @@ world orchestrator {
     import runner;
     import invoker;
     import runtime-info;
+
+    // Tamper-evident audit. The orchestrator imports the secure-log
+    // `log` interface and is composed (via `wac plug`) with the
+    // self-contained secure-log-sqlite component, which satisfies
+    // this import. The orchestrator never sees the store or the
+    // sqlite engine — only the append/verify surface.
+    import secure-log:log/log@0.1.0;
+
     export smoke;
 
     // First real sys:compose export. Plan (de)serialization +

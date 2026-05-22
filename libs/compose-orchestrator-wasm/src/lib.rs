@@ -26,6 +26,9 @@ wit_bindgen::generate!({
 });
 
 mod adapters;
+mod wit_secure_log;
+
+use std::sync::{Arc, Mutex};
 
 use exports::compose::host::smoke::Guest as SmokeGuest;
 use exports::sys::compose::plan::{Guest as PlanGuest, PlanV1 as WitPlanV1};
@@ -52,6 +55,39 @@ impl SmokeGuest for Component {
 
     fn digest(bytes: Vec<u8>) -> Vec<u8> {
         compose_core::blobs::compute_digest(&bytes)
+    }
+
+    fn audit_demo(tenant: String, count: u32) -> Result<u64, String> {
+        // Back compose-core's AuditLogger with the imported secure-log
+        // component. This is the same AuditLogger that runs natively
+        // over SQLite — here it runs over a WIT-imported, wac-composed
+        // secure-log backend, inside the wasm sandbox.
+        let backend = wit_secure_log::WitSecureLog::open(":memory:")?;
+        let shared: compose_core::SharedSecureLog = Arc::new(Mutex::new(backend));
+        let logger = compose_core::AuditLogger::new(
+            shared.clone(),
+            compose_core::SystemClock::shared(),
+        );
+
+        let digest = vec![0u8; 32];
+        for _ in 0..count {
+            logger
+                .log_exec(&digest, &digest, Some(&tenant), "success", Some(0))
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Verify the tenant's hash chain end to end, then report the
+        // head sequence number as proof of how many entries landed.
+        logger
+            .verify_tenant(Some(&tenant))
+            .map_err(|e| e.to_string())?;
+        let head = shared
+            .lock()
+            .map_err(|_| "secure log mutex poisoned".to_string())?
+            .head(&tenant)
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0);
+        Ok(head)
     }
 }
 

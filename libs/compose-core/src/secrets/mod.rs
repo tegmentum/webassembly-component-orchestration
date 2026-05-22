@@ -118,7 +118,6 @@ impl Default for TokenTtl {
 pub struct SecretManager {
     backends: Arc<Mutex<HashMap<String, Box<dyn SecretBackend>>>>,
     tokens: Arc<Mutex<HashMap<SecretToken, TokenEntry>>>,
-    token_counter: Arc<Mutex<u64>>,
     token_ttl: TokenTtl,
     clock: SharedClock,
 }
@@ -134,7 +133,6 @@ impl SecretManager {
         Self {
             backends: Arc::new(Mutex::new(HashMap::new())),
             tokens: Arc::new(Mutex::new(HashMap::new())),
-            token_counter: Arc::new(Mutex::new(0)),
             token_ttl,
             clock,
         }
@@ -353,12 +351,17 @@ impl SecretManager {
         }
     }
 
-    /// Generate a unique token
+    /// Generate an opaque, unguessable bearer token.
+    ///
+    /// The token is the only thing gating [`get_value`](Self::get_value),
+    /// so it must not be derivable from the timestamp or a counter — those
+    /// are predictable and would let an attacker forge a valid token. We
+    /// draw 256 bits from the OS / wasi entropy source (via `getrandom`,
+    /// which has a wasm32-wasip2 backend) and hex-encode them.
     fn generate_token(&self) -> SecretToken {
-        let mut counter = self.token_counter.lock().unwrap();
-        *counter += 1;
-        let timestamp = self.now_secs();
-        format!("token_{}_{}", timestamp, *counter)
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).expect("secret token entropy source unavailable");
+        format!("st_{}", hex::encode(bytes))
     }
 }
 
@@ -440,6 +443,30 @@ mod tests {
         assert!(!manager.validate_token(&token).unwrap());
         let value = manager.get_value(&token);
         assert!(matches!(value.unwrap_err(), SecretError::Expired));
+    }
+
+    #[test]
+    fn test_tokens_are_random_and_unguessable() {
+        let clock = ManualClock::shared(1_000);
+        let manager = SecretManager::new_with_ttl(TokenTtl::Never, clock.clone());
+        let backend = dev::DevBackend::new(clock.clone());
+        backend.add_secret("s", b"value");
+        manager.register_backend(Box::new(backend)).unwrap();
+
+        // Many resolves of the *same* secret at the *same* clock time must
+        // still produce distinct, high-entropy tokens — a counter/timestamp
+        // scheme would collide or be predictable here.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..256 {
+            let token = manager
+                .resolve(&"s".to_string(), &"dev://".to_string())
+                .unwrap();
+            // Shape: "st_" + 64 lowercase hex chars (256 bits of entropy).
+            let hex = token.strip_prefix("st_").expect("token has st_ prefix");
+            assert_eq!(hex.len(), 64, "256-bit token");
+            assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
+            assert!(seen.insert(token), "tokens must be unique");
+        }
     }
 
     #[test]

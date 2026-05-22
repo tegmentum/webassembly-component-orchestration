@@ -25,6 +25,10 @@ use anyhow::Result;
 use std::path::PathBuf;
 use wasmtime::Engine;
 
+/// Fixed ed25519 seed for the development attestation key. Dev/CI only —
+/// production must supply a PKCS#11 / HSM / TPM-backed signer instead.
+const DEV_ATTEST_SEED: [u8; 32] = *b"compose-host-dev-attest-seed!!!\0";
+
 /// Compositor host configuration
 #[derive(Debug, Clone)]
 pub struct HostConfig {
@@ -114,7 +118,15 @@ impl CompositorHost {
             clock.clone(),
         );
         let metrics = MetricsCollector::new(clock.clone());
-        let attestation = AttestationService::new("wasmtime-host".to_string(), clock.clone());
+
+        // Attestation signing capability. The default is an in-process
+        // ed25519 key derived from a fixed dev seed — fine for dev and
+        // CI, NOT for production, where a PKCS#11 / HSM / TPM-backed
+        // signer (keeping the private key off-host) should be wired in.
+        // See compose_core::host::Signer and the pkcs11 feature.
+        let signer = compose_core::host::SoftwareSigner::shared(DEV_ATTEST_SEED);
+        let attestation =
+            AttestationService::new("wasmtime-host".to_string(), signer, clock.clone());
 
         Ok(Self {
             config,

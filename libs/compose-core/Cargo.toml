@@ -31,6 +31,7 @@ walkdir = "2"
 # Tamper-evident audit log. Core crate only (wasm32-wasip2 clean);
 # the SQLite-backed store is a native concern wired by host crates.
 secure-log = { path = "../../../secure-log/crates/secure-log" }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"

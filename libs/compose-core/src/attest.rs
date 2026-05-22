@@ -1,9 +1,7 @@
 /// Attestation and cryptographic signing
-use crate::host::{Clock, SharedClock, SystemClock};
+use crate::host::{verify_ed25519, SharedClock, SharedSigner, ALG_ED25519};
 use crate::types::Digest;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 /// Attestation algorithm
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -59,93 +57,85 @@ pub struct VerificationResult {
     pub error: Option<String>,
 }
 
-/// Simple in-memory key store for dev/testing
-/// In production, this would interface with HSM or KMS
-struct KeyStore {
-    keys: HashMap<Algorithm, (Vec<u8>, Vec<u8>)>, // (private_key, public_key)
-}
-
-impl KeyStore {
-    fn new() -> Self {
-        let mut keys = HashMap::new();
-
-        // Generate dev Ed25519 keypair (deterministic for demos)
-        // In production, use proper key generation and storage
-        let private_key = vec![42u8; 32]; // Placeholder
-        let public_key = vec![1u8; 32];  // Placeholder
-        keys.insert(Algorithm::Ed25519, (private_key, public_key));
-
-        Self { keys }
-    }
-
-    fn get_public_key(&self, algorithm: &Algorithm) -> Option<Vec<u8>> {
-        self.keys.get(algorithm).map(|(_, pk)| pk.clone())
-    }
-
-    fn get_private_key(&self, algorithm: &Algorithm) -> Option<Vec<u8>> {
-        self.keys.get(algorithm).map(|(sk, _)| sk.clone())
-    }
-}
-
-/// Attestation service
+/// Attestation service.
+///
+/// Signing is delegated to a [`Signer`](crate::host::Signer) capability:
+/// in development that's an in-process ed25519 key; in production it's a
+/// PKCS#11 / HSM / TPM provider where the private key never leaves the
+/// token. Verification is pure ed25519 math over the public key embedded
+/// in the attestation, so it needs no signer at all.
 #[derive(Clone)]
 pub struct AttestationService {
     host_id: String,
-    key_store: Arc<Mutex<KeyStore>>,
+    signer: SharedSigner,
     clock: SharedClock,
 }
 
 impl AttestationService {
-    /// Create a new attestation service backed by the given clock.
-    pub fn new(host_id: String, clock: SharedClock) -> Self {
+    /// Create a new attestation service over the given signing
+    /// capability and clock.
+    pub fn new(host_id: String, signer: SharedSigner, clock: SharedClock) -> Self {
         Self {
             host_id,
-            key_store: Arc::new(Mutex::new(KeyStore::new())),
+            signer,
             clock,
         }
     }
 
-    /// Create an attestation for a claim
+    /// The host identifier recorded on attestations created here.
+    pub fn host_id(&self) -> &str {
+        &self.host_id
+    }
+
+    /// Create an attestation for a claim.
+    ///
+    /// Only ed25519 is implemented; other algorithms are rejected
+    /// rather than silently downgraded. The signature is produced by
+    /// the configured signer and the signer's public key is embedded
+    /// so the attestation is self-verifying.
     pub fn attest(&self, claim: Claim, algorithm: Algorithm) -> Result<Attestation, String> {
-        let key_store = self.key_store.lock().unwrap();
+        if algorithm != Algorithm::Ed25519 {
+            return Err(format!("algorithm {algorithm:?} not implemented"));
+        }
+        if self.signer.algorithm() != ALG_ED25519 {
+            return Err(format!(
+                "configured signer uses '{}', not ed25519",
+                self.signer.algorithm()
+            ));
+        }
 
-        let private_key = key_store
-            .get_private_key(&algorithm)
-            .ok_or_else(|| format!("No key found for algorithm {:?}", algorithm))?;
-
-        let public_key = key_store
-            .get_public_key(&algorithm)
-            .ok_or_else(|| format!("No public key found for algorithm {:?}", algorithm))?;
-
-        // Serialize claim for signing
-        let claim_bytes = serde_json::to_vec(&claim)
-            .map_err(|e| format!("Failed to serialize claim: {}", e))?;
-
-        // Sign the claim (simplified signature for demo)
-        // In production, use proper crypto library (e.g., ed25519-dalek, ring)
-        let signature = self.sign_bytes(&claim_bytes, &private_key, &algorithm)?;
+        let claim_bytes =
+            serde_json::to_vec(&claim).map_err(|e| format!("failed to serialize claim: {e}"))?;
+        let signature = self
+            .signer
+            .sign(&claim_bytes)
+            .map_err(|e| format!("signing failed: {e}"))?;
 
         Ok(Attestation {
             claim,
             algorithm,
             signature,
-            public_key,
+            public_key: self.signer.public_key(),
         })
     }
 
-    /// Verify an attestation proof
+    /// Verify an attestation proof against the public key it carries.
     pub fn verify(&self, attestation: &Attestation) -> Result<VerificationResult, String> {
-        // Serialize claim
-        let claim_bytes = serde_json::to_vec(&attestation.claim)
-            .map_err(|e| format!("Failed to serialize claim: {}", e))?;
+        if attestation.algorithm != Algorithm::Ed25519 {
+            return Err(format!(
+                "algorithm {:?} not implemented",
+                attestation.algorithm
+            ));
+        }
 
-        // Verify signature
-        let valid = self.verify_signature(
+        let claim_bytes = serde_json::to_vec(&attestation.claim)
+            .map_err(|e| format!("failed to serialize claim: {e}"))?;
+        let valid = verify_ed25519(
+            &attestation.public_key,
             &claim_bytes,
             &attestation.signature,
-            &attestation.public_key,
-            &attestation.algorithm,
-        )?;
+        )
+        .map_err(|e| format!("verification failed: {e}"))?;
 
         Ok(VerificationResult {
             valid,
@@ -154,17 +144,17 @@ impl AttestationService {
             error: if valid {
                 None
             } else {
-                Some("Invalid signature".to_string())
+                Some("invalid signature".to_string())
             },
         })
     }
 
-    /// Get host public key
+    /// Get the host's public key for the given algorithm.
     pub fn get_public_key(&self, algorithm: Algorithm) -> Result<Vec<u8>, String> {
-        let key_store = self.key_store.lock().unwrap();
-        key_store
-            .get_public_key(&algorithm)
-            .ok_or_else(|| format!("No public key found for algorithm {:?}", algorithm))
+        if algorithm != Algorithm::Ed25519 {
+            return Err(format!("algorithm {algorithm:?} not implemented"));
+        }
+        Ok(self.signer.public_key())
     }
 
     /// Export attestation to JSON format
@@ -198,58 +188,28 @@ impl AttestationService {
         }
     }
 
-    // Simplified signing (for demo purposes)
-    // In production, use proper cryptographic libraries
-    fn sign_bytes(
-        &self,
-        data: &[u8],
-        _private_key: &[u8],
-        algorithm: &Algorithm,
-    ) -> Result<Vec<u8>, String> {
-        match algorithm {
-            Algorithm::Ed25519 => {
-                // Simplified signature = SHA256(data) for demo
-                use sha2::{Digest as Sha2Digest, Sha256};
-                let mut hasher = Sha256::new();
-                hasher.update(data);
-                Ok(hasher.finalize().to_vec())
-            }
-            _ => Err(format!("Algorithm {:?} not implemented", algorithm)),
-        }
-    }
-
-    fn verify_signature(
-        &self,
-        data: &[u8],
-        signature: &[u8],
-        _public_key: &[u8],
-        algorithm: &Algorithm,
-    ) -> Result<bool, String> {
-        match algorithm {
-            Algorithm::Ed25519 => {
-                // Simplified verification = recompute and compare
-                use sha2::{Digest as Sha2Digest, Sha256};
-                let mut hasher = Sha256::new();
-                hasher.update(data);
-                let computed = hasher.finalize().to_vec();
-                Ok(computed == signature)
-            }
-            _ => Err(format!("Algorithm {:?} not implemented", algorithm)),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::{Clock, SoftwareSigner, SystemClock};
 
     fn current_timestamp() -> u64 {
         SystemClock.now_unix_millis()
     }
 
+    fn test_service() -> AttestationService {
+        AttestationService::new(
+            "test-host".to_string(),
+            SoftwareSigner::shared([42u8; 32]),
+            SystemClock::shared(),
+        )
+    }
+
     #[test]
     fn test_attest_and_verify() {
-        let service = AttestationService::new("test-host".to_string(), SystemClock::shared());
+        let service = test_service();
 
         let claim = Claim {
             claim_type: "execution".to_string(),
@@ -271,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_invalid_signature() {
-        let service = AttestationService::new("test-host".to_string(), SystemClock::shared());
+        let service = test_service();
 
         let claim = Claim {
             claim_type: "execution".to_string(),
@@ -294,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_export_json() {
-        let service = AttestationService::new("test-host".to_string(), SystemClock::shared());
+        let service = test_service();
 
         let claim = Claim {
             claim_type: "execution".to_string(),
@@ -313,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_export_slsa() {
-        let service = AttestationService::new("test-host".to_string(), SystemClock::shared());
+        let service = test_service();
 
         let claim = Claim {
             claim_type: "execution".to_string(),

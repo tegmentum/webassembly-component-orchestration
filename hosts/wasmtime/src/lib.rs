@@ -7,8 +7,11 @@
 //! pkcs11 secret backend, which depends on the wasmtime-backed adapter.
 pub mod compose_host;
 pub mod exec;
+pub mod pkcs11_signer;
 #[cfg(feature = "pkcs11")]
 pub mod pkcs11_backend;
+
+pub use pkcs11_signer::{Pkcs11Signer, Pkcs11SignerConfig};
 
 // Re-export the portable core so downstream consumers
 // (composectl, conformance/runner) keep working unchanged.
@@ -42,6 +45,11 @@ pub struct HostConfig {
     pub audit_dir: PathBuf,
     /// Maximum blob size in bytes
     pub max_blob_size: u64,
+    /// Optional PKCS#11-backed attestation signer. When set, attestations
+    /// are signed by a key inside the composed `keys:keystore` (softhsm)
+    /// component instead of the in-process dev key. `None` keeps the
+    /// software signer (dev/CI default).
+    pub attest_pkcs11: Option<pkcs11_signer::Pkcs11SignerConfig>,
 }
 
 impl Default for HostConfig {
@@ -52,6 +60,7 @@ impl Default for HostConfig {
             trust_dir: PathBuf::from(".compose/trust"),
             audit_dir: PathBuf::from(".compose/audit"),
             max_blob_size: 100 * 1024 * 1024, // 100 MB
+            attest_pkcs11: None,
         }
     }
 }
@@ -124,7 +133,15 @@ impl CompositorHost {
         // CI, NOT for production, where a PKCS#11 / HSM / TPM-backed
         // signer (keeping the private key off-host) should be wired in.
         // See compose_core::host::Signer and the pkcs11 feature.
-        let signer = compose_core::host::SoftwareSigner::shared(DEV_ATTEST_SEED);
+        // Attestation signing key. Default is the in-process dev seed
+        // (dev/CI only). If a PKCS#11 signer is configured, the key lives
+        // in the composed keys:keystore (softhsm) component and never
+        // leaves the sandbox — the production-shaped path.
+        let signer = match &config.attest_pkcs11 {
+            Some(pk) => pkcs11_signer::Pkcs11Signer::shared(&engine, pk)
+                .map_err(|e| anyhow::anyhow!("failed to open PKCS#11 attestation signer: {e}"))?,
+            None => compose_core::host::SoftwareSigner::shared(DEV_ATTEST_SEED),
+        };
         let attestation =
             AttestationService::new("wasmtime-host".to_string(), signer, clock.clone());
 

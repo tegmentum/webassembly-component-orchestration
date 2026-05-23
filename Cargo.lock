@@ -2203,6 +2203,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "secure-log"
 version = "0.1.0"
+source = "git+https://github.com/tegmentum/secure-log.git?rev=8ffec9c354280409b6a532df27b4e721701eb608#8ffec9c354280409b6a532df27b4e721701eb608"
 dependencies = [
  "anyhow",
  "chacha20poly1305",
@@ -2222,6 +2223,7 @@ dependencies = [
 [[package]]
 name = "secure-log-sqlite"
 version = "0.1.0"
+source = "git+https://github.com/tegmentum/secure-log.git?rev=8ffec9c354280409b6a532df27b4e721701eb608#8ffec9c354280409b6a532df27b4e721701eb608"
 dependencies = [
  "anyhow",
  "rusqlite",

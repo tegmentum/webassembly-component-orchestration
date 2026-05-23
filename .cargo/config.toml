@@ -1,0 +1,4 @@
+# secure-log is a private git dependency; fetch it via the git CLI so
+# git's credential helpers (gh, ssh-agent, etc.) handle authentication.
+[net]
+git-fetch-with-cli = true

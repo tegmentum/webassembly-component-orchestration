@@ -35,11 +35,11 @@ walkdir = "2"
 
 # Tamper-evident audit log. Core crate only (wasm32-wasip2 clean);
 # the SQLite-backed store is a native concern wired by host crates.
-secure-log = { path = "../../../secure-log/crates/secure-log" }
+secure-log = { git = "https://github.com/tegmentum/secure-log.git", rev = "8ffec9c354280409b6a532df27b4e721701eb608" }
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"
 # Tests use the in-memory SQLite store; native + dev-only, so it does
 # not affect the wasm32-wasip2 library build.
-secure-log-sqlite = { path = "../../../secure-log/crates/secure-log-sqlite" }
+secure-log-sqlite = { git = "https://github.com/tegmentum/secure-log.git", rev = "8ffec9c354280409b6a532df27b4e721701eb608" }

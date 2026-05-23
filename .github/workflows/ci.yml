@@ -11,6 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # compose-core / the host pull secure-log from the private
+      # tegmentum/secure-log repo. .cargo/config.toml sets
+      # git-fetch-with-cli, so cargo's git CLI honors this token. Provide a
+      # repo:read PAT as the TEGMENTUM_CI_TOKEN secret.
+      - name: Authenticate private git dependencies
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.TEGMENTUM_CI_TOKEN }}@github.com/".insteadOf \
+            "https://github.com/"
       - name: Detect Cargo workspaces
         id: cargo
         run: |
@@ -43,6 +52,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Authenticate private git dependencies
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.TEGMENTUM_CI_TOKEN }}@github.com/".insteadOf \
+            "https://github.com/"
       - name: Detect composectl manifest
         id: ctl
         run: |

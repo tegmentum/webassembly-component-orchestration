@@ -3,11 +3,11 @@ use crate::blobs::BlobStore;
 use crate::events::EventCollector;
 use crate::plan::PlanValidator;
 use crate::types::{CompositionResult, Digest, Error, ErrorCode, PlanV1};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use wasmparser::{Validator, WasmFeatures};
-use wasm_compose::composer::BytesComponentComposer;
-use wasm_compose::config::BytesConfig;
+use wasm_compose::composer::ComponentComposer;
+use wasm_compose::config::{Config, Dependency, Instantiation};
 
 /// Emit handler for composition
 pub struct EmitHandler {
@@ -223,17 +223,89 @@ impl EmitHandler {
         }
     }
 
-    /// Create a composed component by wrapping root and dependencies
+    /// Create a composed component by wiring the root's imports to provider
+    /// components, honoring each binding.
+    ///
+    /// `BytesComponentComposer` only instantiates the root and never wires its
+    /// dependencies (its own resolution is, per upstream, "tied to the file
+    /// system"), so the import stays unsatisfied and the provider is left out of
+    /// the output. We instead stage the components to a temporary directory and
+    /// drive the file-based `ComponentComposer`, which performs full dependency
+    /// resolution via `CompositionGraphBuilder`: each binding becomes an
+    /// explicit instantiation mapping the consumer's import instance to a named
+    /// provider component, whose type-compatible export is connected to the
+    /// import. `compose()` errors (rather than silently returning the bare root)
+    /// when no dependency resolves, so an unwired plan now fails loudly.
     fn compose_with_wrapper(
         &self,
         plan: &PlanV1,
         component_map: &HashMap<String, Vec<u8>>,
         root_bytes: &[u8],
     ) -> Result<Vec<u8>, Error> {
-        // Log the binding information
-        for binding in &plan.bindings {
+        // Stage components under a unique, self-cleaning directory beneath the
+        // cache dir (a known-writable location). Removed on drop.
+        let work = StagingDir::new(&self.cache_dir)?;
+
+        let root_path = work.path.join("root.wasm");
+        std::fs::write(&root_path, root_bytes).map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("failed to stage root component: {}", e),
+            )
+        })?;
+
+        let mut config = Config::default();
+        config.dir = work.path.clone();
+
+        // Stage each provider once (keyed by provider id) and register it as a
+        // named dependency; map every import to its provider via an explicit
+        // instantiation so resolution is deterministic rather than relying on
+        // wasm-compose's name auto-matching.
+        let mut staged: HashSet<String> = HashSet::new();
+        for (i, binding) in plan.bindings.iter().enumerate() {
+            if staged.insert(binding.provider_id.clone()) {
+                let dep_bytes = component_map.get(&binding.provider_id).ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!("provider component {} not found", binding.provider_id),
+                    )
+                })?;
+
+                let file_name = format!("dep_{}.wasm", i);
+                std::fs::write(work.path.join(&file_name), dep_bytes).map_err(|e| {
+                    Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!("failed to stage provider {}: {}", binding.provider_id, e),
+                    )
+                })?;
+
+                config
+                    .dependencies
+                    .insert(binding.provider_id.clone(), Dependency { path: file_name.into() });
+
+                self.events.trace(
+                    "staged provider",
+                    Some(format!(
+                        "id: {}, size: {} bytes",
+                        binding.provider_id,
+                        dep_bytes.len()
+                    )),
+                );
+            }
+
+            // Route the consumer's import instance to the provider component.
+            // The provider's type-compatible export is selected automatically,
+            // satisfying `export_name`.
+            config.instantiations.insert(
+                binding.import_name.clone(),
+                Instantiation {
+                    dependency: Some(binding.provider_id.clone()),
+                    ..Default::default()
+                },
+            );
+
             self.events.trace(
-                "binding registered",
+                "wiring binding",
                 Some(format!(
                     "import: {} -> provider: {} export: {}",
                     binding.import_name, binding.provider_id, binding.export_name
@@ -243,40 +315,17 @@ impl EmitHandler {
 
         self.events.info(
             "performing static composition",
-            Some(format!("dependencies: {}", plan.bindings.len())),
+            Some(format!("dependencies: {}", staged.len())),
         );
 
-        // Build bytes-based configuration
-        let mut config = BytesConfig::new();
-
-        // Add all dependency components referenced in bindings
-        for binding in &plan.bindings {
-            let dep_bytes = component_map.get(&binding.provider_id).ok_or_else(|| {
+        let composed = ComponentComposer::new(root_path.as_path(), &config)
+            .compose()
+            .map_err(|e| {
                 Error::new(
                     ErrorCode::EmitCompositionFailed,
-                    format!("provider component {} not found", binding.provider_id),
+                    format!("wasm-compose failed: {}", e),
                 )
             })?;
-
-            // Add as dependency
-            config = config.add_dependency(&binding.provider_id, dep_bytes.as_slice());
-
-            self.events.trace(
-                "added dependency to composition",
-                Some(format!("id: {}, size: {} bytes", binding.provider_id, dep_bytes.len())),
-            );
-        }
-
-        // Create composer with root bytes and configuration
-        let composer = BytesComponentComposer::new(root_bytes, config);
-
-        // Perform composition
-        let composed = composer.compose().map_err(|e| {
-            Error::new(
-                ErrorCode::EmitCompositionFailed,
-                format!("wasm-compose failed: {}", e),
-            )
-        })?;
 
         self.events.info(
             "static composition complete",
@@ -303,6 +352,35 @@ impl EmitHandler {
         );
 
         Ok(())
+    }
+}
+
+/// A staging directory for file-based composition, removed when dropped.
+struct StagingDir {
+    path: PathBuf,
+}
+
+impl StagingDir {
+    /// Create a unique staging directory beneath `base`.
+    fn new(base: &Path) -> Result<Self, Error> {
+        let mut nonce = [0u8; 8];
+        getrandom::fill(&mut nonce).map_err(|e| {
+            Error::new(ErrorCode::InternalError, format!("entropy failure: {}", e))
+        })?;
+        let path = base.join("compose-tmp").join(hex::encode(nonce));
+        std::fs::create_dir_all(&path).map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("failed to create staging dir: {}", e),
+            )
+        })?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for StagingDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 

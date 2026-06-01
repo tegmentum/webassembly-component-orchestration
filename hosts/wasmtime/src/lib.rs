@@ -6,6 +6,7 @@
 //! glue — engine setup, component instantiation via `exec` — plus the
 //! pkcs11 secret backend, which depends on the wasmtime-backed adapter.
 pub mod compose_host;
+pub mod dynlink;
 pub mod exec;
 pub mod pkcs11_signer;
 #[cfg(feature = "pkcs11")]

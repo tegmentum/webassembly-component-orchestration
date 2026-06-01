@@ -36,6 +36,13 @@ cd "$SCRIPT_DIR/hello-http"
 ./build.sh
 echo "  ✓ hello-http built"
 
+# Build dynlink-echo-provider (runtime-linking demo provider)
+echo ""
+echo "Building dynlink-echo-provider..."
+cd "$SCRIPT_DIR/dynlink-echo-provider"
+./build.sh
+echo "  ✓ dynlink-echo-provider built"
+
 echo ""
 echo "All examples built successfully!"
 echo ""

@@ -71,6 +71,25 @@ impl PlanValidator {
         // Phase 4: Bindings
         self.validate_bindings(plan)?;
 
+        // Phase 5: Linkage constraints
+        self.validate_linkage(plan)?;
+
+        Ok(())
+    }
+
+    /// Reject plan/linkage combinations the runtime can't honor. Runtime
+    /// linking is a non-deterministic operation, so it is incompatible
+    /// with strict determinism — fail fast here rather than at exec.
+    fn validate_linkage(&self, plan: &PlanV1) -> Result<(), Error> {
+        use crate::types::{DeterminismMode, Linkage};
+        if plan.linkage == Linkage::Runtime
+            && plan.policy.determinism == DeterminismMode::Strict
+        {
+            return Err(Error::new(
+                ErrorCode::PlanInvalidGraph,
+                "runtime linkage is incompatible with strict determinism",
+            ));
+        }
         Ok(())
     }
 
@@ -267,6 +286,7 @@ mod tests {
             bindings: vec![],
             secrets: vec![],
             policy: Policy::default(),
+            linkage: Default::default(),
         }
     }
 

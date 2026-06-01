@@ -420,6 +420,7 @@ mod tests {
             bindings: vec![],
             secrets: vec![],
             policy: Policy::default(),
+            linkage: Default::default(),
         };
 
         let key1 = emit.compute_emit_key(&plan).unwrap();
@@ -453,6 +454,7 @@ mod tests {
             bindings: vec![],
             secrets: vec![],
             policy: Policy::default(),
+            linkage: Default::default(),
         };
 
         // Compose should succeed and return the component
@@ -482,6 +484,7 @@ mod tests {
             bindings: vec![],
             secrets: vec![],
             policy: Policy::default(),
+            linkage: Default::default(),
         };
 
         // Should fail with missing blob error
@@ -516,6 +519,7 @@ mod tests {
             bindings: vec![],
             secrets: vec![],
             policy: Policy::default(),
+            linkage: Default::default(),
         };
 
         // First composition
@@ -563,6 +567,7 @@ mod tests {
             }],
             secrets: vec![],
             policy: Policy::default(),
+            linkage: Default::default(),
         };
 
         // Should fail - provider doesn't exist
@@ -588,6 +593,7 @@ mod tests {
             bindings: vec![],  // No bindings to avoid cycle detection issues
             secrets: vec![],
             policy: Policy::default(),
+            linkage: Default::default(),
         };
 
         // Should succeed - all components exist

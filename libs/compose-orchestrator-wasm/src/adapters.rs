@@ -20,6 +20,7 @@ use compose_core::types::{
     Capability as CoreCapability, CapabilityLevel as CoreCapabilityLevel,
     ComponentSpec as CoreComponentSpec, DeterminismMode as CoreDeterminismMode,
     Error as CoreError, ErrorCode as CoreErrorCode, ImportBinding as CoreImportBinding,
+    Linkage as CoreLinkage,
     PlanV1 as CorePlanV1, Policy as CorePolicy, ResourceLimits as CoreResourceLimits,
     SecretBinding as CoreSecretBinding,
 };
@@ -34,6 +35,9 @@ pub fn wit_plan_to_core(p: WitPlanV1) -> CorePlanV1 {
         bindings: p.bindings.into_iter().map(wit_binding_to_core).collect(),
         secrets: p.secrets.into_iter().map(wit_secret_to_core).collect(),
         policy: wit_policy_to_core(p.policy),
+        // The WIT plan-v1 does not yet carry a linkage field; default to
+        // Static (the historical behavior) until the WIT catches up.
+        linkage: CoreLinkage::Static,
     }
 }
 

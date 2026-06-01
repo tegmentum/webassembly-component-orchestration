@@ -58,10 +58,12 @@ pub struct ExecHandler {
     policy_enforcer: PolicyEnforcer,
     audit_logger: AuditLogger,
     metrics: MetricsCollector,
+    trust: compose_core::trust::TrustStore,
 }
 
 impl ExecHandler {
     /// Create a new exec handler
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         engine: Engine,
         blobs: BlobStore,
@@ -71,6 +73,7 @@ impl ExecHandler {
         policy_enforcer: PolicyEnforcer,
         audit_logger: AuditLogger,
         metrics: MetricsCollector,
+        trust: compose_core::trust::TrustStore,
     ) -> Self {
         Self {
             engine,
@@ -81,6 +84,7 @@ impl ExecHandler {
             policy_enforcer,
             audit_logger,
             metrics,
+            trust,
         }
     }
 
@@ -91,6 +95,13 @@ impl ExecHandler {
         _args: Vec<String>,
         _env: Vec<(String, String)>,
     ) -> Result<ExecResult, Error> {
+        // Runtime-linked plans (flavor A) take a separate path: the root
+        // consumer's endpoint import is bound to a provider at exec time
+        // rather than statically composed.
+        if plan.linkage == compose_core::types::Linkage::Runtime {
+            return self.run_cli_runtime_linked(plan, _args, _env);
+        }
+
         let start_time = std::time::Instant::now();
 
         self.events.info(
@@ -214,6 +225,125 @@ impl ExecHandler {
         } else {
             self.metrics.counter("exec.failure", 1, labels);
         }
+
+        Ok(result)
+    }
+
+    /// Execute a runtime-linked plan (flavor A): run the root consumer as
+    /// a CLI command with its single `compose:dynlink/endpoint` import
+    /// bound to a provider resolved at exec time. The provider is trust-
+    /// gated and its digest is folded into the exec-key so the cache only
+    /// hits when the same provider is linked.
+    fn run_cli_runtime_linked(
+        &self,
+        plan: &PlanV1,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<ExecResult, Error> {
+        let start_time = std::time::Instant::now();
+        self.events.info("executing runtime-linked plan as CLI", None);
+
+        let enforced_policy = self.policy_enforcer.enforce_policy(&plan.policy).map_err(|e| {
+            Error::new(ErrorCode::PolicyViolation, format!("policy enforcement failed: {}", e))
+        })?;
+
+        // Locate the root consumer and the single endpoint binding.
+        let consumer_digest = plan
+            .components
+            .iter()
+            .find(|c| c.id == plan.root)
+            .map(|c| c.digest.clone())
+            .ok_or_else(|| Error::new(ErrorCode::PlanInvalidGraph, "root component not found in plan"))?;
+
+        let binding = match plan.bindings.as_slice() {
+            [b] => b,
+            [] => {
+                return Err(Error::new(
+                    ErrorCode::PlanInvalidGraph,
+                    "runtime linkage requires exactly one endpoint binding",
+                ))
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorCode::NotImplemented,
+                    "runtime linkage with multiple bindings is not yet supported",
+                ))
+            }
+        };
+
+        let provider_digest = plan
+            .components
+            .iter()
+            .find(|c| c.id == binding.provider_id)
+            .map(|c| c.digest.clone())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::PlanInvalidGraph,
+                    format!("provider '{}' not found in plan", binding.provider_id),
+                )
+            })?;
+
+        // Trust-gate the provider before it is loaded or instantiated.
+        self.trust.verify_digest(&provider_digest).map_err(|e| {
+            Error::new(ErrorCode::TrustUntrustedSource, e.to_string())
+        })?;
+
+        let consumer_bytes = self.blobs.get(&consumer_digest)?;
+        let provider_bytes = self.blobs.get(&provider_digest)?;
+
+        // Fold the resolved provider into the exec-key; the consumer digest
+        // stands in for the (non-existent) composed artifact.
+        let mut resolved = BTreeSet::new();
+        resolved.insert(provider_digest.clone());
+        let exec_key = self.compute_exec_key(plan, &consumer_digest, &resolved)?;
+        let plan_digest = self.compute_plan_digest(plan)?;
+
+        if let Some(cached) = self.check_cache(&exec_key) {
+            self.events.info("execution cache hit (runtime-linked)", None);
+            let _ = self.audit_logger.log_exec(
+                &plan_digest,
+                &exec_key,
+                enforced_policy.tenant_id(),
+                "success (cached, runtime-linked)",
+                Some(cached.exit_code),
+            );
+            return Ok(cached);
+        }
+
+        let out = crate::dynlink::run_cli_with_endpoint(
+            &self.engine,
+            &consumer_bytes,
+            &provider_bytes,
+            &args,
+            &env,
+        )?;
+
+        let result = ExecResult {
+            exit_code: out.exit_code,
+            stdout: out.stdout,
+            stderr: out.stderr,
+            exec_key: exec_key.clone(),
+        };
+
+        self.update_cache(&exec_key, &result)?;
+        let _ = self.audit_logger.log_exec(
+            &plan_digest,
+            &exec_key,
+            enforced_policy.tenant_id(),
+            "success (runtime-linked)",
+            Some(result.exit_code),
+        );
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let labels = vec![
+            MetricLabel { key: "operation".to_string(), value: "exec.runtime_linked".to_string() },
+            MetricLabel {
+                key: "tenant".to_string(),
+                value: enforced_policy.tenant_id().unwrap_or("default").to_string(),
+            },
+        ];
+        self.metrics.timer("exec.duration_ms", duration_ms, labels.clone());
+        self.metrics.counter("exec.total", 1, labels);
 
         Ok(result)
     }

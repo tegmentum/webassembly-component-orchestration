@@ -16,6 +16,7 @@ struct CacheEntry {
 }
 
 /// Trust store for managing verified artifacts
+#[derive(Clone)]
 pub struct TrustStore {
     trust_dir: PathBuf,
     trusted: Arc<Mutex<HashMap<Vec<u8>, VerificationMetadata>>>,

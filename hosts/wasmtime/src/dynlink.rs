@@ -363,16 +363,24 @@ fn consumer_error(code: ErrorCode, message: String) -> consumer::sys::compose::t
     }
 }
 
+/// Build a portable `compose_core` error for the public flavor-A helpers
+/// (which return `compose_core::Error`, unlike the bindgen trait impls
+/// that must return the generated `Error`).
+fn core_error(code: compose_core::types::ErrorCode, message: String) -> compose_core::types::Error {
+    compose_core::types::Error::new(code, message)
+}
+
 /// Instantiate a provider component (exports `endpoint`) in its own store.
 fn instantiate_provider(
     engine: &Engine,
     bytes: &[u8],
-) -> Result<(Store<ProviderState>, provider::DynlinkProvider), Error> {
+) -> Result<(Store<ProviderState>, provider::DynlinkProvider), compose_core::types::Error> {
+    use compose_core::types::ErrorCode as CoreErrorCode;
     let component = Component::new(engine, bytes)
-        .map_err(|e| error(ErrorCode::EmitLinkError, format!("failed to load provider component: {e:?}")))?;
+        .map_err(|e| core_error(CoreErrorCode::EmitLinkError, format!("failed to load provider component: {e:?}")))?;
     let mut linker = Linker::<ProviderState>::new(engine);
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
-        .map_err(|e| error(ErrorCode::InternalError, format!("failed to add WASI to provider linker: {e:?}")))?;
+        .map_err(|e| core_error(CoreErrorCode::InternalError, format!("failed to add WASI to provider linker: {e:?}")))?;
     let mut store = Store::new(
         engine,
         ProviderState {
@@ -381,7 +389,7 @@ fn instantiate_provider(
         },
     );
     let instance = provider::DynlinkProvider::instantiate(&mut store, &component, &linker)
-        .map_err(|e| error(ErrorCode::ExecTrap, format!("failed to instantiate provider: {e:?}")))?;
+        .map_err(|e| core_error(CoreErrorCode::ExecTrap, format!("failed to instantiate provider: {e:?}")))?;
     Ok((store, instance))
 }
 
@@ -396,17 +404,18 @@ pub fn run_cli_with_endpoint(
     provider_bytes: &[u8],
     args: &[String],
     env: &[(String, String)],
-) -> Result<RuntimeLinkOutput, Error> {
+) -> Result<RuntimeLinkOutput, compose_core::types::Error> {
+    use compose_core::types::ErrorCode as CoreErrorCode;
     let (provider_store, provider) = instantiate_provider(engine, provider_bytes)?;
 
     let consumer_component = Component::new(engine, consumer_bytes)
-        .map_err(|e| error(ErrorCode::EmitLinkError, format!("failed to load consumer component: {e:?}")))?;
+        .map_err(|e| core_error(CoreErrorCode::EmitLinkError, format!("failed to load consumer component: {e:?}")))?;
 
     let mut linker = Linker::<ConsumerState>::new(engine);
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
-        .map_err(|e| error(ErrorCode::InternalError, format!("failed to add WASI to consumer linker: {e:?}")))?;
+        .map_err(|e| core_error(CoreErrorCode::InternalError, format!("failed to add WASI to consumer linker: {e:?}")))?;
     consumer::EndpointConsumer::add_to_linker::<_, HasSelf<ConsumerState>>(&mut linker, |s| s)
-        .map_err(|e| error(ErrorCode::EmitLinkError, format!("failed to add endpoint import to consumer linker: {e:?}")))?;
+        .map_err(|e| core_error(CoreErrorCode::EmitLinkError, format!("failed to add endpoint import to consumer linker: {e:?}")))?;
 
     let stdout = MemoryOutputPipe::new(64 * 1024);
     let stderr = MemoryOutputPipe::new(64 * 1024);
@@ -429,11 +438,11 @@ pub fn run_cli_with_endpoint(
     let mut store = Store::new(engine, state);
 
     let command = Command::instantiate(&mut store, &consumer_component, &linker)
-        .map_err(|e| error(ErrorCode::ExecTrap, format!("failed to instantiate consumer command: {e:?}")))?;
+        .map_err(|e| core_error(CoreErrorCode::ExecTrap, format!("failed to instantiate consumer command: {e:?}")))?;
     let exit_code = match command
         .wasi_cli_run()
         .call_run(&mut store)
-        .map_err(|e| error(ErrorCode::ExecTrap, format!("consumer run trapped: {e:?}")))?
+        .map_err(|e| core_error(CoreErrorCode::ExecTrap, format!("consumer run trapped: {e:?}")))?
     {
         Ok(()) => 0u32,
         Err(()) => 1u32,

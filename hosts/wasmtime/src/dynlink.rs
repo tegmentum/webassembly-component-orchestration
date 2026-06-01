@@ -54,10 +54,10 @@ mod consumer {
     });
 }
 
-/// Host state for a provider instance's own store. Providers may use
+/// Host state for an isolated instance's own store. Components may use
 /// WASI (std pulls it in even for trivial logic), so the store carries a
 /// minimal WASI context.
-struct ProviderState {
+pub struct ProviderState {
     wasi_ctx: WasiCtx,
     wasi_table: ResourceTable,
 }
@@ -402,6 +402,51 @@ fn consumer_error(code: ErrorCode, message: String) -> consumer::sys::compose::t
 /// that must return the generated `Error`).
 fn core_error(code: compose_core::types::ErrorCode, message: String) -> compose_core::types::Error {
     compose_core::types::Error::new(code, message)
+}
+
+/// A component instantiated in its own isolated WASI store, owned by the
+/// host. This is the shared base for both the dynlink endpoint path and
+/// the `compose:host/invoker` capability, so there is one runtime-
+/// instantiation path rather than two.
+pub struct OwnedInstance {
+    /// The instance's own store. Calls into the instance borrow it `&mut`.
+    pub store: Store<ProviderState>,
+    /// The instantiated component, with imports satisfied by WASI only.
+    pub instance: wasmtime::component::Instance,
+    /// Top-level export names (interfaces and bare functions), in the
+    /// component's declaration order.
+    pub exports: Vec<String>,
+}
+
+/// Instantiate any component in a fresh WASI-only store and return the raw
+/// instance plus its top-level export names. Errors are returned as a
+/// portable `compose_core::Error`.
+pub fn instantiate_owned(
+    engine: &Engine,
+    bytes: &[u8],
+) -> Result<OwnedInstance, compose_core::types::Error> {
+    use compose_core::types::ErrorCode as CoreErrorCode;
+    let component = Component::new(engine, bytes)
+        .map_err(|e| core_error(CoreErrorCode::InvalidInput, format!("invalid component: {e:?}")))?;
+    let exports: Vec<String> = component
+        .component_type()
+        .exports(engine)
+        .map(|(name, _)| name.to_string())
+        .collect();
+    let mut linker = Linker::<ProviderState>::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        .map_err(|e| core_error(CoreErrorCode::InternalError, format!("failed to add WASI: {e:?}")))?;
+    let mut store = Store::new(
+        engine,
+        ProviderState {
+            wasi_ctx: WasiCtxBuilder::new().build(),
+            wasi_table: ResourceTable::new(),
+        },
+    );
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| core_error(CoreErrorCode::ExecTrap, format!("failed to instantiate: {e:?}")))?;
+    Ok(OwnedInstance { store, instance, exports })
 }
 
 /// Instantiate a provider component (exports `endpoint`) in its own store.

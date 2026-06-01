@@ -29,10 +29,11 @@ trust/policy/audit gating, and is scoped as a host→orchestrator capability.
 
 `compose:dynlink` is the **general mechanism**: digest/id resolution, trust +
 policy + audit gating, and the uniform opaque-byte `endpoint` calling
-convention. The plan is to **re-implement `invoker` on top of `compose:dynlink`**
-once the bridge is established (tracked separately), so there is one runtime
-instantiation path rather than two. Until then the two coexist; `invoker`
-remains the typed-CBOR path and `dynlink` the uniform-byte path.
+convention. As of Phase 6, `invoker`'s instance **lifecycle** (instantiate /
+list-exports / get-export / drop) is re-implemented on the shared dynlink
+instantiation base (`dynlink::instantiate_owned` / `OwnedInstance`), so there is
+one runtime-instantiation path. Its typed `call-with-cbor` remains deferred —
+see Phase 6 below.
 
 Two flavors are in scope:
 
@@ -414,6 +415,26 @@ declare the two capabilities.
 that entrypoint exists — `DynState` is currently exercised via the host API and
 tests, not a live guest-execution command. Flavor A (the wired exec path) is
 audited.
+
+### Phase 6 — Reimplement `compose:host/invoker` on the dynlink base ✅ (partial)
+
+- **Shared base**: `dynlink::instantiate_owned` instantiates *any* component
+  in a fresh WASI store and returns an `OwnedInstance` (raw `Instance` + its
+  own `Store` + top-level export names). This is the single runtime-
+  instantiation primitive.
+- **invoker lifecycle** (`compose_host.rs`): `instantiate`, `list-exports`,
+  `get-export`, and `drop` are now real implementations over `OwnedInstance`
+  (handles bridged by `Resource::new_own(rep)`), replacing the previous stubs.
+  Malformed bytes surface as `invalid-component`.
+- **Deferred**: `call-with-cbor` (structured, typed invocation) still returns a
+  clear "not yet implemented" error — but now against a live instance. It needs
+  type-directed CBOR↔`Val` marshalling over each export's signature, which the
+  component model can't yet express polymorphically through WIT; `invoker.wit`
+  itself marks this provisional. `limits` are accepted but not yet enforced
+  (epoch/memory limiting is future work).
+
+**Tests**: `invoker_lifecycle_runs_on_dynlink_base` (instantiate the echo
+provider, list/get its exports, drop) and `invoker_rejects_invalid_component`.
 
 ## Resources
 

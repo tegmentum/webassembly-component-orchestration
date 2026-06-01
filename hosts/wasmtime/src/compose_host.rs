@@ -58,6 +58,11 @@ pub struct HostState {
     runtime_name: String,
     runtime_version: String,
     host_target: String,
+    /// Engine used to instantiate components for the `invoker` capability.
+    engine: Engine,
+    /// Backing store for live `invoker` instances, handed out as opaque
+    /// `instance` resource handles. Reuses the dynlink instantiation base.
+    invoker_table: ResourceTable,
 }
 
 impl WasiView for HostState {
@@ -117,33 +122,53 @@ impl RunnerHost for HostState {
     }
 }
 
+/// Retype an `invoker` instance handle to the dynlink `OwnedInstance`
+/// backing it (same table rep; see the equivalent in `dynlink`).
+fn invoker_backing(
+    r: &wasmtime::component::Resource<compose::host::invoker::Instance>,
+) -> wasmtime::component::Resource<crate::dynlink::OwnedInstance> {
+    wasmtime::component::Resource::new_own(r.rep())
+}
+
 impl InvokerHost for HostState {
     fn instantiate(
         &mut self,
-        _component_bytes: Vec<u8>,
+        component_bytes: Vec<u8>,
         _limits: Limits,
     ) -> Result<wasmtime::component::Resource<compose::host::invoker::Instance>, ExecError>
     {
-        Err(ExecError::HostError(
-            "invoker.instantiate not yet implemented".to_string(),
-        ))
+        // Reuse the dynlink instantiation base: a fresh WASI store per
+        // instance. `limits` are accepted but not yet enforced (epoch /
+        // memory limiting is future work — see invoker.wit's provisional
+        // status).
+        let owned = crate::dynlink::instantiate_owned(&self.engine, &component_bytes)
+            .map_err(|e| ExecError::InvalidComponent(e.message))?;
+        let backing = self
+            .invoker_table
+            .push(owned)
+            .map_err(|e| ExecError::HostError(format!("resource table push failed: {e:?}")))?;
+        Ok(wasmtime::component::Resource::new_own(backing.rep()))
     }
 }
 
 impl HostInstance for HostState {
     fn get_export(
         &mut self,
-        _self_: wasmtime::component::Resource<compose::host::invoker::Instance>,
-        _name: String,
+        self_: wasmtime::component::Resource<compose::host::invoker::Instance>,
+        name: String,
     ) -> Option<u32> {
-        unreachable!("instance handles are never minted by the stub instantiate")
+        let owned = self.invoker_table.get(&invoker_backing(&self_)).ok()?;
+        owned.exports.iter().position(|n| n == &name).map(|i| i as u32)
     }
 
     fn list_exports(
         &mut self,
-        _self_: wasmtime::component::Resource<compose::host::invoker::Instance>,
+        self_: wasmtime::component::Resource<compose::host::invoker::Instance>,
     ) -> Vec<String> {
-        unreachable!("instance handles are never minted by the stub instantiate")
+        self.invoker_table
+            .get(&invoker_backing(&self_))
+            .map(|owned| owned.exports.clone())
+            .unwrap_or_default()
     }
 
     fn call_with_cbor(
@@ -152,13 +177,24 @@ impl HostInstance for HostState {
         _export_id: u32,
         _args_cbor: Vec<u8>,
     ) -> Result<Vec<u8>, ExecError> {
-        unreachable!("instance handles are never minted by the stub instantiate")
+        // Structured invocation requires type-directed CBOR<->Val
+        // marshalling over each export's signature. The component model
+        // can't yet express polymorphic value passing through WIT
+        // directly (see invoker.wit), so this remains deferred — but it is
+        // now backed by a real, live instance rather than a stub.
+        Err(ExecError::HostError(
+            "call-with-cbor (structured invocation) is not yet implemented: \
+             typed CBOR<->Val marshalling is deferred"
+                .to_string(),
+        ))
     }
 
     fn drop(
         &mut self,
-        _self_: wasmtime::component::Resource<compose::host::invoker::Instance>,
+        self_: wasmtime::component::Resource<compose::host::invoker::Instance>,
     ) -> wasmtime::Result<()> {
+        // Releasing the handle drops the instance's store and linear memory.
+        let _ = self.invoker_table.delete(invoker_backing(&self_))?;
         Ok(())
     }
 }
@@ -212,6 +248,8 @@ pub fn instantiate_orchestrator(
         host_target: std::env::consts::ARCH.to_string()
             + "-"
             + std::env::consts::OS,
+        engine: engine.clone(),
+        invoker_table: ResourceTable::new(),
     };
 
     let mut store = Store::new(engine, state);
@@ -406,4 +444,85 @@ pub fn sample_plan_with_digest(component_digest: Vec<u8>) -> exports::sys::compo
 struct HasSelf<T>(std::marker::PhantomData<T>);
 impl<T: 'static> wasmtime::component::HasData for HasSelf<T> {
     type Data<'a> = &'a mut T;
+}
+
+#[cfg(test)]
+mod invoker_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn echo_provider() -> Option<Vec<u8>> {
+        std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../examples/dynlink-echo-provider/target/wasm32-wasip2/release/dynlink_echo_provider.wasm",
+        ))
+        .ok()
+    }
+
+    fn host_state(engine: &Engine) -> HostState {
+        HostState {
+            wasi_ctx: WasiCtxBuilder::new().build(),
+            wasi_table: ResourceTable::new(),
+            runtime_name: "test".to_string(),
+            runtime_version: "0".to_string(),
+            host_target: "test".to_string(),
+            engine: engine.clone(),
+            invoker_table: ResourceTable::new(),
+        }
+    }
+
+    fn no_limits() -> Limits {
+        Limits { cpu_ms: None, memory_bytes: None, timeout_ms: None, stdio_buffer_bytes: None }
+    }
+
+    fn handle_to(
+        h: &wasmtime::component::Resource<compose::host::invoker::Instance>,
+    ) -> wasmtime::component::Resource<compose::host::invoker::Instance> {
+        wasmtime::component::Resource::new_own(h.rep())
+    }
+
+    /// invoker.instantiate / list-exports / get-export / drop now run on
+    /// the shared dynlink instantiation base (no longer stubbed).
+    #[test]
+    fn invoker_lifecycle_runs_on_dynlink_base() {
+        let Some(bytes) = echo_provider() else {
+            eprintln!("skipping: build examples/dynlink-echo-provider");
+            return;
+        };
+        let mut cfg = wasmtime::Config::new();
+        cfg.wasm_component_model(true);
+        let engine = Engine::new(&cfg).unwrap();
+        let mut state = host_state(&engine);
+
+        let handle = InvokerHost::instantiate(&mut state, bytes, no_limits()).expect("instantiate");
+
+        let exports = HostInstance::list_exports(&mut state, handle_to(&handle));
+        assert!(
+            exports.iter().any(|e| e.contains("compose:dynlink/endpoint")),
+            "expected endpoint export, got {exports:?}"
+        );
+
+        let known = exports[0].clone();
+        assert!(HostInstance::get_export(&mut state, handle_to(&handle), known).is_some());
+        assert!(HostInstance::get_export(&mut state, handle_to(&handle), "nope".to_string()).is_none());
+
+        // Structured invocation remains deferred, but against a live instance.
+        let err = HostInstance::call_with_cbor(&mut state, handle_to(&handle), 0, vec![])
+            .expect_err("call-with-cbor deferred");
+        assert!(matches!(err, ExecError::HostError(_)));
+
+        HostInstance::drop(&mut state, handle).expect("drop");
+    }
+
+    /// Malformed component bytes surface as invalid-component, not a stub.
+    #[test]
+    fn invoker_rejects_invalid_component() {
+        let mut cfg = wasmtime::Config::new();
+        cfg.wasm_component_model(true);
+        let engine = Engine::new(&cfg).unwrap();
+        let mut state = host_state(&engine);
+
+        let err = InvokerHost::instantiate(&mut state, vec![0, 1, 2, 3], no_limits())
+            .expect_err("garbage must fail");
+        assert!(matches!(err, ExecError::InvalidComponent(_)));
+    }
 }

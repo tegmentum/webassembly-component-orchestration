@@ -23,6 +23,8 @@ use compose_core::types::DeterminismMode;
 use std::collections::{BTreeSet, HashMap};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
+use wasmtime_wasi::p2::bindings::sync::Command;
+use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 /// Typed bindings for instantiating and calling a *provider* component —
@@ -33,6 +35,16 @@ mod provider {
     wasmtime::component::bindgen!({
         path: "../../wit/compose-dynlink",
         world: "dynlink-provider",
+    });
+}
+
+/// Typed bindings for a *consumer* world (flavor A): the host imports
+/// `endpoint` and satisfies it by forwarding to a bound provider. Kept
+/// in its own module for the same reason as `provider`.
+mod consumer {
+    wasmtime::component::bindgen!({
+        path: "../../wit/compose-dynlink",
+        world: "endpoint-consumer",
     });
 }
 
@@ -292,6 +304,149 @@ pub fn add_to_linker(linker: &mut Linker<DynState>) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to add compose:dynlink bindings to linker: {e:?}"))
 }
 
+/// Result of running a consumer command with a runtime-linked endpoint.
+pub struct RuntimeLinkOutput {
+    pub exit_code: u32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Execution state for a consumer command (flavor A). It **owns** the
+/// bound provider's store, so satisfying the consumer's `endpoint` import
+/// is a plain trait call into that store — no shared-state gymnastics,
+/// and the two components stay in separate stores.
+struct ConsumerState {
+    wasi_ctx: WasiCtx,
+    wasi_table: ResourceTable,
+    provider_store: Store<ProviderState>,
+    provider: provider::DynlinkProvider,
+}
+
+impl WasiView for ConsumerState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.wasi_table,
+        }
+    }
+}
+
+impl consumer::sys::compose::types::Host for ConsumerState {}
+
+impl consumer::compose::dynlink::endpoint::Host for ConsumerState {
+    fn handle(
+        &mut self,
+        method: String,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, consumer::sys::compose::types::Error> {
+        // Disjoint borrows of `provider` and `provider_store` from &mut self.
+        let endpoint = self.provider.compose_dynlink_endpoint();
+        let result = endpoint
+            .call_handle(&mut self.provider_store, &method, &payload)
+            .map_err(|e| consumer_error(ErrorCode::ExecTrap, format!("provider handle trapped: {e:?}")))?;
+        result.map_err(|e| consumer_error(ErrorCode::ExecTrap, format!("provider endpoint error: {}", e.message)))
+    }
+}
+
+/// Build a consumer-side `Error` (a distinct Rust type from the guest-side
+/// `Error`, same shape).
+fn consumer_error(code: ErrorCode, message: String) -> consumer::sys::compose::types::Error {
+    consumer::sys::compose::types::Error {
+        // `ErrorCode` is shared structurally across the bindgen modules but
+        // is a distinct Rust type per module; remap by value.
+        code: match code {
+            ErrorCode::ExecTrap => consumer::sys::compose::types::ErrorCode::ExecTrap,
+            _ => consumer::sys::compose::types::ErrorCode::InternalError,
+        },
+        message,
+        context: None,
+    }
+}
+
+/// Instantiate a provider component (exports `endpoint`) in its own store.
+fn instantiate_provider(
+    engine: &Engine,
+    bytes: &[u8],
+) -> Result<(Store<ProviderState>, provider::DynlinkProvider), Error> {
+    let component = Component::new(engine, bytes)
+        .map_err(|e| error(ErrorCode::EmitLinkError, format!("failed to load provider component: {e:?}")))?;
+    let mut linker = Linker::<ProviderState>::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        .map_err(|e| error(ErrorCode::InternalError, format!("failed to add WASI to provider linker: {e:?}")))?;
+    let mut store = Store::new(
+        engine,
+        ProviderState {
+            wasi_ctx: WasiCtxBuilder::new().build(),
+            wasi_table: ResourceTable::new(),
+        },
+    );
+    let instance = provider::DynlinkProvider::instantiate(&mut store, &component, &linker)
+        .map_err(|e| error(ErrorCode::ExecTrap, format!("failed to instantiate provider: {e:?}")))?;
+    Ok((store, instance))
+}
+
+/// Run a consumer CLI command (`wasi:cli/run`) whose single `endpoint`
+/// import is satisfied by `provider_bytes` (flavor A). The provider is
+/// instantiated in its own store; the consumer's import is routed to it
+/// through [`ConsumerState`]. Trust verification of `provider_bytes` is
+/// the caller's responsibility.
+pub fn run_cli_with_endpoint(
+    engine: &Engine,
+    consumer_bytes: &[u8],
+    provider_bytes: &[u8],
+    args: &[String],
+    env: &[(String, String)],
+) -> Result<RuntimeLinkOutput, Error> {
+    let (provider_store, provider) = instantiate_provider(engine, provider_bytes)?;
+
+    let consumer_component = Component::new(engine, consumer_bytes)
+        .map_err(|e| error(ErrorCode::EmitLinkError, format!("failed to load consumer component: {e:?}")))?;
+
+    let mut linker = Linker::<ConsumerState>::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        .map_err(|e| error(ErrorCode::InternalError, format!("failed to add WASI to consumer linker: {e:?}")))?;
+    consumer::EndpointConsumer::add_to_linker::<_, HasSelf<ConsumerState>>(&mut linker, |s| s)
+        .map_err(|e| error(ErrorCode::EmitLinkError, format!("failed to add endpoint import to consumer linker: {e:?}")))?;
+
+    let stdout = MemoryOutputPipe::new(64 * 1024);
+    let stderr = MemoryOutputPipe::new(64 * 1024);
+    let mut builder = WasiCtxBuilder::new();
+    builder.args(args);
+    for (k, v) in env {
+        builder.env(k, v);
+    }
+    builder
+        .stdin(MemoryInputPipe::new(Vec::new()))
+        .stdout(stdout.clone())
+        .stderr(stderr.clone());
+
+    let state = ConsumerState {
+        wasi_ctx: builder.build(),
+        wasi_table: ResourceTable::new(),
+        provider_store,
+        provider,
+    };
+    let mut store = Store::new(engine, state);
+
+    let command = Command::instantiate(&mut store, &consumer_component, &linker)
+        .map_err(|e| error(ErrorCode::ExecTrap, format!("failed to instantiate consumer command: {e:?}")))?;
+    let exit_code = match command
+        .wasi_cli_run()
+        .call_run(&mut store)
+        .map_err(|e| error(ErrorCode::ExecTrap, format!("consumer run trapped: {e:?}")))?
+    {
+        Ok(()) => 0u32,
+        Err(()) => 1u32,
+    };
+
+    drop(store);
+    Ok(RuntimeLinkOutput {
+        exit_code,
+        stdout: stdout.contents().to_vec(),
+        stderr: stderr.contents().to_vec(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +459,13 @@ mod tests {
     fn echo_provider_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/dynlink-echo-provider/target/wasm32-wasip2/release/dynlink_echo_provider.wasm")
+    }
+
+    /// The consumer is a bin crate, so its artifact keeps the dashed
+    /// package name (unlike the cdylib provider's underscored name).
+    fn endpoint_consumer_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/dynlink-endpoint-consumer/target/wasm32-wasip2/release/dynlink-endpoint-consumer.wasm")
     }
 
     /// Build a DynState backed by a temp blob store + trust store, with
@@ -438,6 +600,40 @@ mod tests {
             .resolve_by_id("nope".to_string())
             .expect_err("unknown id must fail");
         assert!(matches!(err.code, ErrorCode::InvalidInput));
+    }
+
+    /// Flavor A: a real consumer command's `endpoint` import is routed at
+    /// exec time to a separately-instantiated provider, cross-store. The
+    /// consumer sends `upper("hello from consumer")`; the echo provider
+    /// uppercases it; the consumer prints the result.
+    #[test]
+    fn flavor_a_routes_consumer_endpoint_to_provider() {
+        let (Ok(provider), Ok(consumer)) = (
+            std::fs::read(echo_provider_path()),
+            std::fs::read(endpoint_consumer_path()),
+        ) else {
+            eprintln!(
+                "skipping: build examples/dynlink-echo-provider and \
+                 examples/dynlink-endpoint-consumer"
+            );
+            return;
+        };
+
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).unwrap();
+
+        let out = run_cli_with_endpoint(&engine, &consumer, &provider, &[], &[]).expect("run");
+        assert_eq!(
+            out.exit_code,
+            0,
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "HELLO FROM CONSUMER"
+        );
     }
 
     /// Runtime linking is refused under strict determinism, before any

@@ -43,6 +43,13 @@ cd "$SCRIPT_DIR/dynlink-echo-provider"
 ./build.sh
 echo "  ✓ dynlink-echo-provider built"
 
+# Build dynlink-endpoint-consumer (flavor A late-bound import demo)
+echo ""
+echo "Building dynlink-endpoint-consumer..."
+cd "$SCRIPT_DIR/dynlink-endpoint-consumer"
+./build.sh
+echo "  ✓ dynlink-endpoint-consumer built"
+
 echo ""
 echo "All examples built successfully!"
 echo ""

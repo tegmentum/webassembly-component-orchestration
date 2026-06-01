@@ -13,6 +13,7 @@ exclude = [
     "examples/hello-cli",
     "examples/hello-http",
     "examples/dynlink-echo-provider",
+    "examples/dynlink-endpoint-consumer",
     "libs/compose-orchestrator-wasm",
 ]
 resolver = "2"

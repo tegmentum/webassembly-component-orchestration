@@ -17,3 +17,11 @@ world dynlink-guest {
 world dynlink-provider {
   export endpoint;
 }
+
+/// A consumer component whose single `endpoint` import is satisfied at
+/// exec time by a host-resolved provider (flavor A: late-bound plan
+/// imports). The host implements `endpoint` by forwarding to the bound
+/// provider, which it runs in a separate store.
+world endpoint-consumer {
+  import endpoint;
+}

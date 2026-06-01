@@ -50,6 +50,10 @@ impl Default for HostPolicy {
                 "wasi:cli".to_string(),
                 "wasi:filesystem".to_string(),
                 "wasi:http".to_string(),
+                // Runtime / dynamic linking verbs. A plan must still
+                // declare these to use them; the host merely permits them.
+                "dynlink:resolve".to_string(),
+                "dynlink:invoke".to_string(),
             ]
             .iter()
             .cloned()

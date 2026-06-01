@@ -27,6 +27,12 @@ use wasmtime_wasi::p2::bindings::sync::Command;
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
+/// Capability a plan must be granted to resolve (instantiate) a component
+/// at runtime.
+pub const CAP_RESOLVE: &str = "dynlink:resolve";
+/// Capability a plan must be granted to invoke a resolved instance.
+pub const CAP_INVOKE: &str = "dynlink:invoke";
+
 /// Typed bindings for instantiating and calling a *provider* component —
 /// one that exports `compose:dynlink/endpoint`. Kept in its own module
 /// so its generated `compose::dynlink` / `sys::compose` types don't
@@ -75,6 +81,10 @@ pub struct DynInstance {
     /// exec-key wiring and audit).
     #[allow(dead_code)]
     digest: Vec<u8>,
+    /// Capabilities granted to this instance, snapshotted from the loader
+    /// at resolve time so a resolved component can never exceed the
+    /// loader's grant.
+    capabilities: BTreeSet<String>,
 }
 
 wasmtime::component::bindgen!({
@@ -113,6 +123,9 @@ pub struct DynState {
     /// Determinism mode of the executing plan. Runtime linking is a
     /// non-deterministic operation, so it is refused under `Strict`.
     determinism: DeterminismMode,
+    /// Capabilities the executing plan was granted. `resolve`/`invoke` are
+    /// gated on the relevant verb being present.
+    granted: BTreeSet<String>,
     /// Registry mapping a stable component id to its content digest, used
     /// by `resolve-by-id`. Populated by the host before execution.
     registry: HashMap<String, Vec<u8>>,
@@ -131,6 +144,7 @@ impl DynState {
         blobs: BlobStore,
         trust: TrustStore,
         determinism: DeterminismMode,
+        granted: BTreeSet<String>,
     ) -> anyhow::Result<Self> {
         let mut provider_linker = Linker::<ProviderState>::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut provider_linker)
@@ -144,6 +158,7 @@ impl DynState {
             trust,
             provider_linker,
             determinism,
+            granted,
             registry: HashMap::new(),
             resolved: BTreeSet::new(),
         })
@@ -206,6 +221,14 @@ impl LinkerHost for DynState {
             ));
         }
 
+        // 0b. Capability gate: the plan must hold `dynlink:resolve`.
+        if !self.granted.contains(CAP_RESOLVE) {
+            return Err(error(
+                ErrorCode::ExecCapabilityDenied,
+                format!("resolution requires the '{CAP_RESOLVE}' capability"),
+            ));
+        }
+
         // 1. Trust gate: refuse to instantiate code that isn't trusted.
         self.trust
             .verify_digest(&d)
@@ -238,6 +261,9 @@ impl LinkerHost for DynState {
                 store,
                 provider: instance,
                 digest: d.clone(),
+                // Snapshot the loader's grant; a resolved component cannot
+                // exceed it.
+                capabilities: self.granted.clone(),
             })
             .map_err(|e| error(ErrorCode::InternalError, format!("resource table push failed: {e:?}")))?;
 
@@ -269,6 +295,14 @@ impl HostInstance for DynState {
             .dyn_table
             .get_mut(&as_backing(&self_))
             .map_err(|e| error(ErrorCode::InternalError, format!("unknown dynlink handle: {e:?}")))?;
+
+        // Capability gate: this instance must hold `dynlink:invoke`.
+        if !di.capabilities.contains(CAP_INVOKE) {
+            return Err(error(
+                ErrorCode::ExecCapabilityDenied,
+                format!("invoke requires the '{CAP_INVOKE}' capability"),
+            ));
+        }
 
         // Borrow the provider accessor and its own store as disjoint
         // fields, then forward the opaque message verbatim.
@@ -481,9 +515,24 @@ mod tests {
     /// the provider blob stored and its digest trusted. The returned
     /// `TempDir` must be kept alive for the duration of the test (it owns
     /// the on-disk blob/trust directories).
+    /// Capability set granting both dynlink verbs.
+    fn full_grant() -> BTreeSet<String> {
+        [CAP_RESOLVE.to_string(), CAP_INVOKE.to_string()]
+            .into_iter()
+            .collect()
+    }
+
     fn fixture(
         provider_bytes: &[u8],
         determinism: DeterminismMode,
+    ) -> (DynState, Vec<u8>, tempfile::TempDir) {
+        fixture_with_grant(provider_bytes, determinism, full_grant())
+    }
+
+    fn fixture_with_grant(
+        provider_bytes: &[u8],
+        determinism: DeterminismMode,
+        granted: BTreeSet<String>,
     ) -> (DynState, Vec<u8>, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("temp dir");
         let blobs = BlobStore::new(tmp.path().join("blobs"), 64 * 1024 * 1024).expect("blob store");
@@ -505,7 +554,7 @@ mod tests {
         let mut config = wasmtime::Config::new();
         config.wasm_component_model(true);
         let engine = Engine::new(&config).expect("engine");
-        let state = DynState::new(engine, blobs, trust, determinism).expect("dyn state");
+        let state = DynState::new(engine, blobs, trust, determinism, granted).expect("dyn state");
         (state, digest, tmp)
     }
 
@@ -658,5 +707,30 @@ mod tests {
             .expect_err("strict must reject");
         assert!(matches!(err.code, ErrorCode::ExecCapabilityDenied));
         assert!(state.resolved_providers().is_empty());
+    }
+
+    /// Resolution requires the `dynlink:resolve` capability; invocation
+    /// requires `dynlink:invoke`.
+    #[test]
+    fn missing_capability_is_rejected() {
+        let Ok(bytes) = std::fs::read(echo_provider_path()) else {
+            return;
+        };
+
+        // No capabilities granted: resolve is refused.
+        let (mut bare, digest, _t1) =
+            fixture_with_grant(&bytes, DeterminismMode::Relaxed, BTreeSet::new());
+        let err = bare.resolve_by_digest(digest.clone()).expect_err("must deny resolve");
+        assert!(matches!(err.code, ErrorCode::ExecCapabilityDenied));
+
+        // resolve granted but not invoke: resolve succeeds, invoke is refused.
+        let resolve_only: BTreeSet<String> = [CAP_RESOLVE.to_string()].into_iter().collect();
+        let (mut state, digest, _t2) =
+            fixture_with_grant(&bytes, DeterminismMode::Relaxed, resolve_only);
+        let handle = state.resolve_by_digest(digest).expect("resolve allowed");
+        let err = state
+            .invoke(Resource::new_own(handle.rep()), "echo".to_string(), b"x".to_vec())
+            .expect_err("must deny invoke");
+        assert!(matches!(err.code, ErrorCode::ExecCapabilityDenied));
     }
 }

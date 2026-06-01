@@ -76,6 +76,34 @@ host-side type checking — a malformed call surfaces as a deserialization error
 arbitrary typed WIT interfaces across the boundary continue to use static
 composition.
 
+### Payload envelope (recommended convention)
+
+The host forwards `payload` bytes opaquely, so the wire format is an application
+concern. To keep providers and consumers evolvable, encode `payload` as a
+**CBOR envelope** carrying a schema id and version rather than a bare blob:
+
+```
+{
+  "schema": "acme:widgets/resize",   // stable identifier for the message type
+  "v":      1,                         // envelope/schema version (integer)
+  "body":   <CBOR value>               // the actual request/response payload
+}
+```
+
+Guidelines:
+
+- **Bump `v`** for breaking changes to `body`; a provider can accept multiple
+  versions during migration and reject unknown ones with an `error`.
+- **Namespace `schema`** (reverse-DNS or a WIT-style `pkg:iface/op`) so a single
+  endpoint can multiplex several message types via the `method` argument.
+- Reuse `secure_log::CborEncoder` (already a host dependency) so no new
+  serialization stack is introduced.
+
+This is a convention, not a host requirement — the runtime never inspects the
+bytes. The bundled examples (`dynlink-echo-provider`, `dynlink-endpoint-consumer`)
+use a deliberately trivial plain-bytes protocol to keep the mechanism legible;
+real providers should adopt the envelope.
+
 ## Architecture
 
 ```
@@ -365,15 +393,27 @@ adapters; richer validation that both endpoints speak `endpoint` (needs
 component-type introspection, not available in portable `validate`); flavor A
 currently supports exactly one endpoint binding per plan.
 
-### Phase 5 — Policy verbs, audit, and docs
+### Phase 5 — Policy verbs, audit, and docs ✅
 
-- Add `dynlink:resolve` / `dynlink:invoke` capability verbs to `PolicyEnforcer`
-  (`policy.rs`) and per-instance capability sets on `DynInstance`.
-- Ensure every resolve/invoke is audited with the resolved digest set.
-- Document the CBOR payload envelope (schema/version tag) as the
-  inter-component contract.
-- *Exit:* a component cannot resolve/invoke without the capability; audit log
-  shows the full dynamic-linking trail.
+- **Capability verbs**: `dynlink:resolve` / `dynlink:invoke` are added to the
+  default `HostPolicy` allow-list (`policy.rs`); a plan must still *declare*
+  them to use them. Flavor A gates in `run_cli_runtime_linked` (both verbs
+  required, else `ExecCapabilityDenied`). Flavor B gates in `DynState`:
+  `resolve_by_digest` requires `dynlink:resolve`, and each `DynInstance`
+  snapshots the loader's grant so `invoke` requires `dynlink:invoke` and a
+  resolved component can never exceed the loader's grant.
+- **Audit**: the flavor-A run records the resolved provider digest in the
+  tamper-evident exec log (`success (runtime-linked, provider=<digest>)`).
+- **Envelope**: documented above (CBOR `{schema, v, body}`).
+
+**Tests**: `missing_capability_is_rejected` (resolve denied with no grant;
+invoke denied when only `resolve` is granted). Existing flavor-A e2e plans now
+declare the two capabilities.
+
+**Note**: dedicated audit for a *guest-driven* flavor-B exec path is moot until
+that entrypoint exists — `DynState` is currently exercised via the host API and
+tests, not a live guest-execution command. Flavor A (the wired exec path) is
+audited.
 
 ## Resources
 

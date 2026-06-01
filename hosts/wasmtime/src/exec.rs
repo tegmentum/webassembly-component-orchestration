@@ -247,6 +247,21 @@ impl ExecHandler {
             Error::new(ErrorCode::PolicyViolation, format!("policy enforcement failed: {}", e))
         })?;
 
+        // Capability gate: runtime linking requires both dynlink verbs to be
+        // granted (declared by the plan and permitted by the host).
+        if !enforced_policy.has_capability(crate::dynlink::CAP_RESOLVE)
+            || !enforced_policy.has_capability(crate::dynlink::CAP_INVOKE)
+        {
+            return Err(Error::new(
+                ErrorCode::ExecCapabilityDenied,
+                format!(
+                    "runtime linking requires the '{}' and '{}' capabilities",
+                    crate::dynlink::CAP_RESOLVE,
+                    crate::dynlink::CAP_INVOKE
+                ),
+            ));
+        }
+
         // Locate the root consumer and the single endpoint binding.
         let consumer_digest = plan
             .components
@@ -326,11 +341,13 @@ impl ExecHandler {
         };
 
         self.update_cache(&exec_key, &result)?;
+        // Audit the run, recording the resolved provider so the dynamic
+        // linking decision is captured in the tamper-evident log.
         let _ = self.audit_logger.log_exec(
             &plan_digest,
             &exec_key,
             enforced_policy.tenant_id(),
-            "success (runtime-linked)",
+            &format!("success (runtime-linked, provider={})", hex::encode(&provider_digest)),
             Some(result.exit_code),
         );
 

@@ -9,9 +9,22 @@
 use std::path::PathBuf;
 
 use compose_host_wasmtime::{
-    ComponentSpec, CompositorHost, DeterminismMode, HostConfig, ImportBinding, Linkage, Policy,
-    PlanV1, VerificationMetadata,
+    Capability, CapabilityLevel, ComponentSpec, CompositorHost, DeterminismMode, HostConfig,
+    ImportBinding, Linkage, Policy, PlanV1, VerificationMetadata,
 };
+
+/// A policy that grants the two dynlink verbs (and is non-strict), as a
+/// runtime-linked plan must.
+fn runtime_policy() -> Policy {
+    Policy {
+        determinism: DeterminismMode::Relaxed,
+        capabilities: vec![
+            Capability { name: "dynlink:resolve".to_string(), level: CapabilityLevel::Required },
+            Capability { name: "dynlink:invoke".to_string(), level: CapabilityLevel::Required },
+        ],
+        ..Policy::default()
+    }
+}
 
 fn example(rel: &str, file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -73,7 +86,7 @@ fn runtime_linked_plan_runs_consumer_with_bound_provider() {
             export_name: "compose:dynlink/endpoint".to_string(),
         }],
         secrets: vec![],
-        policy: Policy { determinism: DeterminismMode::Relaxed, ..Policy::default() },
+        policy: runtime_policy(),
         linkage: Linkage::Runtime,
     };
 
@@ -132,7 +145,7 @@ fn runtime_linked_plan_rejects_untrusted_provider() {
             export_name: "compose:dynlink/endpoint".to_string(),
         }],
         secrets: vec![],
-        policy: Policy { determinism: DeterminismMode::Relaxed, ..Policy::default() },
+        policy: runtime_policy(),
         linkage: Linkage::Runtime,
     };
 

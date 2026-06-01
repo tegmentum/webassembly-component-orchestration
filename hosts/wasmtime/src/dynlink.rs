@@ -19,6 +19,8 @@
 //! resolve-by-id and the exec-key/determinism wiring are Phase 3.
 use compose_core::blobs::BlobStore;
 use compose_core::trust::TrustStore;
+use compose_core::types::DeterminismMode;
+use std::collections::{BTreeSet, HashMap};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -96,13 +98,28 @@ pub struct DynState {
     trust: TrustStore,
     /// Pre-built linker (WASI only) used to instantiate every provider.
     provider_linker: Linker<ProviderState>,
+    /// Determinism mode of the executing plan. Runtime linking is a
+    /// non-deterministic operation, so it is refused under `Strict`.
+    determinism: DeterminismMode,
+    /// Registry mapping a stable component id to its content digest, used
+    /// by `resolve-by-id`. Populated by the host before execution.
+    registry: HashMap<String, Vec<u8>>,
+    /// Digests resolved during this execution, in sorted order. Exposed
+    /// so the exec path can fold them into the exec-key and audit record
+    /// (a guest-driven resolution set is only known after the fact).
+    resolved: BTreeSet<Vec<u8>>,
 }
 
 impl DynState {
     /// Construct a dynlink host state wired to the host's blob store,
     /// trust store, and engine. WASI is registered on the provider
     /// linker so resolved providers can link the WASI surface std needs.
-    pub fn new(engine: Engine, blobs: BlobStore, trust: TrustStore) -> anyhow::Result<Self> {
+    pub fn new(
+        engine: Engine,
+        blobs: BlobStore,
+        trust: TrustStore,
+        determinism: DeterminismMode,
+    ) -> anyhow::Result<Self> {
         let mut provider_linker = Linker::<ProviderState>::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut provider_linker)
             .map_err(|e| anyhow::anyhow!("failed to add WASI to provider linker: {e:?}"))?;
@@ -114,7 +131,21 @@ impl DynState {
             blobs,
             trust,
             provider_linker,
+            determinism,
+            registry: HashMap::new(),
+            resolved: BTreeSet::new(),
         })
+    }
+
+    /// Register an `id -> digest` mapping for `resolve-by-id`.
+    pub fn register_id(&mut self, id: impl Into<String>, digest: Vec<u8>) {
+        self.registry.insert(id.into(), digest);
+    }
+
+    /// The set of provider digests resolved during this execution, sorted.
+    /// The exec path folds this into the exec-key and audit record.
+    pub fn resolved_providers(&self) -> &BTreeSet<Vec<u8>> {
+        &self.resolved
     }
 }
 
@@ -153,6 +184,16 @@ impl sys::compose::types::Host for DynState {}
 
 impl LinkerHost for DynState {
     fn resolve_by_digest(&mut self, d: Vec<u8>) -> Result<Resource<Instance>, Error> {
+        // 0. Determinism gate: runtime linking is non-deterministic, so
+        // refuse it under Strict. Audit/Relaxed permit it (Phase 5 records
+        // each resolution in the audit log under Audit).
+        if self.determinism == DeterminismMode::Strict {
+            return Err(error(
+                ErrorCode::ExecCapabilityDenied,
+                "runtime linking is not permitted under strict determinism",
+            ));
+        }
+
         // 1. Trust gate: refuse to instantiate code that isn't trusted.
         self.trust
             .verify_digest(&d)
@@ -184,18 +225,24 @@ impl LinkerHost for DynState {
             .push(DynInstance {
                 store,
                 provider: instance,
-                digest: d,
+                digest: d.clone(),
             })
             .map_err(|e| error(ErrorCode::InternalError, format!("resource table push failed: {e:?}")))?;
+
+        // 5. Record the resolved digest for the exec-key / audit record.
+        self.resolved.insert(d);
         Ok(Resource::new_own(backing.rep()))
     }
 
-    fn resolve_by_id(&mut self, _id: String) -> Result<Resource<Instance>, Error> {
-        // Phase 3: map id -> digest via a registry, then resolve_by_digest.
-        Err(error(
-            ErrorCode::NotImplemented,
-            "compose:dynlink/linker.resolve-by-id not yet implemented (Phase 3)",
-        ))
+    fn resolve_by_id(&mut self, id: String) -> Result<Resource<Instance>, Error> {
+        let digest = self.registry.get(&id).cloned().ok_or_else(|| {
+            error(
+                ErrorCode::InvalidInput,
+                format!("unknown component id: {id}"),
+            )
+        })?;
+        // Delegate so the determinism and trust gates apply uniformly.
+        self.resolve_by_digest(digest)
     }
 }
 
@@ -263,7 +310,10 @@ mod tests {
     /// the provider blob stored and its digest trusted. The returned
     /// `TempDir` must be kept alive for the duration of the test (it owns
     /// the on-disk blob/trust directories).
-    fn fixture(provider_bytes: &[u8]) -> (DynState, Vec<u8>, tempfile::TempDir) {
+    fn fixture(
+        provider_bytes: &[u8],
+        determinism: DeterminismMode,
+    ) -> (DynState, Vec<u8>, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("temp dir");
         let blobs = BlobStore::new(tmp.path().join("blobs"), 64 * 1024 * 1024).expect("blob store");
         let digest = blobs.put(provider_bytes).expect("store provider");
@@ -284,7 +334,7 @@ mod tests {
         let mut config = wasmtime::Config::new();
         config.wasm_component_model(true);
         let engine = Engine::new(&config).expect("engine");
-        let state = DynState::new(engine, blobs, trust).expect("dyn state");
+        let state = DynState::new(engine, blobs, trust, determinism).expect("dyn state");
         (state, digest, tmp)
     }
 
@@ -313,8 +363,11 @@ mod tests {
             return;
         };
 
-        let (mut state, digest, _tmp) = fixture(&bytes);
-        let handle = state.resolve_by_digest(digest).expect("resolve by digest");
+        let (mut state, digest, _tmp) = fixture(&bytes, DeterminismMode::Relaxed);
+        let handle = state.resolve_by_digest(digest.clone()).expect("resolve by digest");
+
+        // The resolved digest is recorded for exec-key / audit folding.
+        assert!(state.resolved_providers().contains(&digest));
 
         let echoed = state
             .invoke(
@@ -352,10 +405,53 @@ mod tests {
         let Ok(bytes) = std::fs::read(echo_provider_path()) else {
             return;
         };
-        let (mut state, _digest, _tmp) = fixture(&bytes);
+        let (mut state, _digest, _tmp) = fixture(&bytes, DeterminismMode::Relaxed);
         // A digest that was never trusted.
         let bogus = vec![0u8; 32];
         let err = state.resolve_by_digest(bogus).expect_err("must reject");
         assert!(matches!(err.code, ErrorCode::TrustUntrustedSource));
+    }
+
+    /// resolve-by-id maps a registered id to its digest, then applies the
+    /// same trust + determinism gates as resolve-by-digest.
+    #[test]
+    fn resolve_by_id_uses_registry() {
+        let Ok(bytes) = std::fs::read(echo_provider_path()) else {
+            return;
+        };
+        let (mut state, digest, _tmp) = fixture(&bytes, DeterminismMode::Relaxed);
+        state.register_id("echo", digest.clone());
+
+        let handle = state.resolve_by_id("echo".to_string()).expect("resolve by id");
+        let echoed = state
+            .invoke(
+                Resource::new_own(handle.rep()),
+                "echo".to_string(),
+                b"hi".to_vec(),
+            )
+            .expect("echo");
+        assert_eq!(echoed, b"hi");
+        assert!(state.resolved_providers().contains(&digest));
+
+        // An unregistered id is rejected.
+        let err = state
+            .resolve_by_id("nope".to_string())
+            .expect_err("unknown id must fail");
+        assert!(matches!(err.code, ErrorCode::InvalidInput));
+    }
+
+    /// Runtime linking is refused under strict determinism, before any
+    /// trust check or instantiation.
+    #[test]
+    fn strict_determinism_rejects_resolution() {
+        let Ok(bytes) = std::fs::read(echo_provider_path()) else {
+            return;
+        };
+        let (mut state, digest, _tmp) = fixture(&bytes, DeterminismMode::Strict);
+        let err = state
+            .resolve_by_digest(digest)
+            .expect_err("strict must reject");
+        assert!(matches!(err.code, ErrorCode::ExecCapabilityDenied));
+        assert!(state.resolved_providers().is_empty());
     }
 }

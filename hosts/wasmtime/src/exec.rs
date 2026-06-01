@@ -6,6 +6,7 @@ use compose_core::blobs::BlobStore;
 use compose_core::metrics::{MetricLabel, MetricsCollector};
 use compose_core::policy::PolicyEnforcer;
 use compose_core::types::{Digest, Error, ErrorCode, ExecResult, ExportInfo, HttpRequest, HttpResponse, PlanV1};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use wasmtime::{
     component::{Component, Linker},
@@ -14,6 +15,23 @@ use wasmtime::{
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView, WasiCtxView};
 use wasmtime_wasi::p2::bindings::sync::Command;
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
+
+/// Fold the set of providers linked at runtime into an exec-key hasher.
+///
+/// No-op when empty, so static-composition exec-keys are unchanged from
+/// before runtime linking existed. The `BTreeSet` is iterated in sorted
+/// order for determinism, and a domain separator guards against collision
+/// with the static portion of the key.
+fn fold_resolved_providers(hasher: &mut sha2::Sha256, resolved: &BTreeSet<Digest>) {
+    use sha2::Digest as _;
+    if resolved.is_empty() {
+        return;
+    }
+    hasher.update(b"dynlink-resolved:v1");
+    for digest in resolved {
+        hasher.update(digest);
+    }
+}
 
 /// Host state for WASI execution
 struct HostState {
@@ -102,8 +120,12 @@ impl ExecHandler {
         // Compose the plan first
         let composition = self.emit.compose(plan)?;
 
-        // Compute exec key
-        let exec_key = self.compute_exec_key(plan, &composition.digest)?;
+        // Compute exec key. The static composition path resolves no
+        // providers at runtime, so the resolved set is empty here and the
+        // key is identical to the pre-dynlink computation. The runtime-
+        // linking exec path (flavor A) passes the plan's bound provider
+        // digests instead.
+        let exec_key = self.compute_exec_key(plan, &composition.digest, &BTreeSet::new())?;
         let plan_digest = self.compute_plan_digest(plan)?;
 
         // Check cache
@@ -449,8 +471,18 @@ impl ExecHandler {
     }
 
     /// Compute exec key for caching with tenant isolation
-    /// exec_key = H(plan + digests + "exec:v1" + host_abi + caps + policy + tenant + limits + features)
-    fn compute_exec_key(&self, plan: &PlanV1, artifact_digest: &Digest) -> Result<Digest, Error> {
+    /// exec_key = H(plan + digests + "exec:v1" + host_abi + caps + policy + tenant + limits + features + resolved)
+    ///
+    /// `resolved_providers` is the set of provider digests linked at
+    /// runtime. It is empty for static composition (keeping those keys
+    /// stable) and non-empty for runtime linking, where folding it in
+    /// ensures a cache hit only when the exact same providers are linked.
+    fn compute_exec_key(
+        &self,
+        plan: &PlanV1,
+        artifact_digest: &Digest,
+        resolved_providers: &BTreeSet<Digest>,
+    ) -> Result<Digest, Error> {
         use sha2::{Digest as Sha2Digest, Sha256};
 
         let plan_validator = compose_core::plan::PlanValidator::new(self.blobs.clone());
@@ -483,6 +515,9 @@ impl ExecHandler {
         if let Some(io_ops) = plan.policy.limits.io_ops {
             hasher.update(io_ops.to_le_bytes());
         }
+
+        // Providers linked at runtime (empty for static composition).
+        fold_resolved_providers(&mut hasher, resolved_providers);
 
         Ok(hasher.finalize().to_vec())
     }
@@ -547,5 +582,45 @@ impl ExecHandler {
     fn cache_key_path(&self, exec_key: &Digest) -> PathBuf {
         let hex_key = hex::encode(exec_key);
         self.cache_dir.join("exec").join(&hex_key[..2]).join(&hex_key[2..])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest as _, Sha256};
+
+    fn hash_with(resolved: &BTreeSet<Digest>) -> Digest {
+        let mut h = Sha256::new();
+        h.update(b"base");
+        fold_resolved_providers(&mut h, resolved);
+        h.finalize().to_vec()
+    }
+
+    #[test]
+    fn empty_resolved_set_does_not_change_key() {
+        // Static composition (empty set) must hash identically to not
+        // folding at all, so existing exec-keys stay stable.
+        let mut baseline = Sha256::new();
+        baseline.update(b"base");
+        assert_eq!(hash_with(&BTreeSet::new()), baseline.finalize().to_vec());
+    }
+
+    #[test]
+    fn resolved_providers_change_the_key() {
+        let empty = hash_with(&BTreeSet::new());
+        let one: BTreeSet<Digest> = [vec![1u8; 32]].into_iter().collect();
+        let two: BTreeSet<Digest> = [vec![1u8; 32], vec![2u8; 32]].into_iter().collect();
+
+        assert_ne!(hash_with(&one), empty);
+        assert_ne!(hash_with(&two), hash_with(&one));
+    }
+
+    #[test]
+    fn resolved_set_order_is_deterministic() {
+        // BTreeSet ordering means insertion order can't affect the key.
+        let a: BTreeSet<Digest> = [vec![1u8; 32], vec![2u8; 32]].into_iter().collect();
+        let b: BTreeSet<Digest> = [vec![2u8; 32], vec![1u8; 32]].into_iter().collect();
+        assert_eq!(hash_with(&a), hash_with(&b));
     }
 }

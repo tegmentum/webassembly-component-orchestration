@@ -298,15 +298,36 @@ guest that imports `linker`) and skips gracefully if the provider isn't built.
   own a `TrustStore` + build a `DynState`) arrives with Phase 4's exec
   integration. Until then runtime linking is exercised at the host-API level.
 
-### Phase 3 — Resolve by id + determinism/exec-key
+### Phase 3 — Resolve by id + determinism/exec-key ✅
 
-- Add an id→digest registry (extend the CAS or the trusted set in `trust.wit`);
-  implement `resolve_by_id`.
-- Fold resolved provider digests into `compute_exec_key` (`exec.rs:453`).
-- Gate dynamic linking on `DeterminismMode::Relaxed`; reject otherwise with a
-  clear error.
-- *Exit:* exec-key changes when a resolved provider changes; non-Relaxed plans
-  are rejected.
+Implemented in `hosts/wasmtime/src/dynlink.rs` and `hosts/wasmtime/src/exec.rs`:
+
+- **`resolve_by_id`**: `DynState` holds an in-memory `id -> digest` registry
+  (`register_id`); `resolve_by_id` looks the id up and delegates to
+  `resolve_by_digest` so the trust and determinism gates apply uniformly. An
+  unknown id is rejected with `InvalidInput`.
+- **Determinism gate**: `DynState` carries the plan's `DeterminismMode`.
+  Resolution is refused under `Strict` (`ExecCapabilityDenied`) before any trust
+  check or instantiation. `Audit` and `Relaxed` permit it — `Audit` exists to
+  allow-and-record non-deterministic operations, and Phase 5 logs each
+  resolution under it. (This refines the original "Relaxed only" wording: it is
+  really "anything but Strict".)
+- **Exec-key**: `compute_exec_key` now takes the set of runtime-resolved
+  provider digests and folds them via `fold_resolved_providers` (sorted, domain-
+  separated, no-op when empty so static keys are unchanged). `DynState`
+  accumulates the resolved set (`resolved_providers()`) during execution —
+  necessary because a guest-driven resolution set is only known after the fact;
+  flavor A (Phase 4) can pass the plan's bound digests up front instead.
+
+**Tests**: `resolve_by_id_uses_registry`, `strict_determinism_rejects_resolution`
+(dynlink); `empty_resolved_set_does_not_change_key`,
+`resolved_providers_change_the_key`, `resolved_set_order_is_deterministic`
+(exec). The static `run_cli` path passes an empty resolved set, so existing
+exec-keys are byte-identical to before.
+
+**Still not wired**: nothing yet *calls* `compute_exec_key` with a non-empty set
+or constructs a `DynState` in the live exec path — that integration (plus the
+`TrustStore` in `CompositorHost`) lands with Phase 4.
 
 ### Phase 4 — Flavor A (late-bound plan imports)
 

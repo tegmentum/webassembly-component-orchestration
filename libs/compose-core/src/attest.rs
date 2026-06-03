@@ -187,7 +187,6 @@ impl AttestationService {
             _ => Err(format!("Unsupported format: {}", format)),
         }
     }
-
 }
 
 #[cfg(test)]

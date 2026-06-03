@@ -1,19 +1,21 @@
 /// Execution and reflection APIs
 use compose_core::audit::AuditLogger;
+use compose_core::blobs::BlobStore;
 use compose_core::emit::EmitHandler;
 use compose_core::events::EventCollector;
-use compose_core::blobs::BlobStore;
 use compose_core::metrics::{MetricLabel, MetricsCollector};
 use compose_core::policy::PolicyEnforcer;
-use compose_core::types::{Digest, Error, ErrorCode, ExecResult, ExportInfo, HttpRequest, HttpResponse, PlanV1};
+use compose_core::types::{
+    Digest, Error, ErrorCode, ExecResult, ExportInfo, HttpRequest, HttpResponse, PlanV1,
+};
 use std::path::PathBuf;
 use wasmtime::{
     component::{Component, Linker},
     Engine, Store,
 };
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView, WasiCtxView};
 use wasmtime_wasi::p2::bindings::sync::Command;
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 /// Host state for WASI execution
 struct HostState {
@@ -44,6 +46,7 @@ pub struct ExecHandler {
 
 impl ExecHandler {
     /// Create a new exec handler
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         engine: Engine,
         blobs: BlobStore,
@@ -75,27 +78,29 @@ impl ExecHandler {
     ) -> Result<ExecResult, Error> {
         let start_time = std::time::Instant::now();
 
-        self.events.info(
-            "executing plan as CLI",
-            Some(format!("args: {:?}", _args)),
-        );
+        self.events
+            .info("executing plan as CLI", Some(format!("args: {:?}", _args)));
 
         // Enforce policy before execution
-        let enforced_policy = self.policy_enforcer.enforce_policy(&plan.policy).map_err(|e| {
-            self.events.error(
-                "policy enforcement failed",
-                Some(e.to_string()),
-            );
-            Error::new(
-                ErrorCode::PolicyViolation,
-                format!("policy enforcement failed: {}", e),
-            )
-        })?;
+        let enforced_policy = self
+            .policy_enforcer
+            .enforce_policy(&plan.policy)
+            .map_err(|e| {
+                self.events
+                    .error("policy enforcement failed", Some(e.to_string()));
+                Error::new(
+                    ErrorCode::PolicyViolation,
+                    format!("policy enforcement failed: {}", e),
+                )
+            })?;
 
         if !enforced_policy.denied_optional.is_empty() {
             self.events.warn(
                 "optional capabilities denied",
-                Some(format!("denied: {}", enforced_policy.denied_optional.join(", "))),
+                Some(format!(
+                    "denied: {}",
+                    enforced_policy.denied_optional.join(", ")
+                )),
             );
         }
 
@@ -141,21 +146,20 @@ impl ExecHandler {
         // Execute the component with WASI support
         self.events.info("executing component with WASI", None);
 
-        let result = self.execute_wasi_command(&component, _args, _env, &exec_key).map_err(|e| {
-            let err = Error::new(
-                ErrorCode::ExecTrap,
-                format!("execution failed: {}", e),
-            );
-            // Log failure
-            let _ = self.audit_logger.log_exec(
-                &plan_digest,
-                &exec_key,
-                enforced_policy.tenant_id(),
-                &format!("failure: {}", e),
-                None,
-            );
-            err
-        })?;
+        let result = self
+            .execute_wasi_command(&component, _args, _env, &exec_key)
+            .map_err(|e| {
+                let err = Error::new(ErrorCode::ExecTrap, format!("execution failed: {}", e));
+                // Log failure
+                let _ = self.audit_logger.log_exec(
+                    &plan_digest,
+                    &exec_key,
+                    enforced_policy.tenant_id(),
+                    &format!("failure: {}", e),
+                    None,
+                );
+                err
+            })?;
 
         // Update cache
         self.update_cache(&exec_key, &result)?;
@@ -169,7 +173,10 @@ impl ExecHandler {
             Some(result.exit_code),
         );
 
-        self.events.info("execution complete", Some(format!("exit_code: {}", result.exit_code)));
+        self.events.info(
+            "execution complete",
+            Some(format!("exit_code: {}", result.exit_code)),
+        );
 
         // Record execution metrics
         let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -184,7 +191,8 @@ impl ExecHandler {
             },
         ];
 
-        self.metrics.timer("exec.duration_ms", duration_ms, labels.clone());
+        self.metrics
+            .timer("exec.duration_ms", duration_ms, labels.clone());
         self.metrics.counter("exec.total", 1, labels.clone());
 
         if result.exit_code == 0 {
@@ -197,12 +205,7 @@ impl ExecHandler {
     }
 
     /// Invoke a specific exported function by name
-    pub fn invoke(
-        &self,
-        plan: &PlanV1,
-        export_name: &str,
-        args: &[u8],
-    ) -> Result<Vec<u8>, Error> {
+    pub fn invoke(&self, plan: &PlanV1, export_name: &str, args: &[u8]) -> Result<Vec<u8>, Error> {
         self.events.info(
             "invoking function",
             Some(format!("export: {}", export_name)),
@@ -240,24 +243,20 @@ impl ExecHandler {
         let mut store = Store::new(&self.engine, host_state);
 
         // Instantiate the component
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .map_err(|e| {
-                Error::new(
-                    ErrorCode::ExecTrap,
-                    format!("failed to instantiate component: {}", e),
-                )
-            })?;
+        let instance = linker.instantiate(&mut store, &component).map_err(|e| {
+            Error::new(
+                ErrorCode::ExecTrap,
+                format!("failed to instantiate component: {}", e),
+            )
+        })?;
 
         // Get the export
-        let func = instance
-            .get_func(&mut store, export_name)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ExecMissingExport,
-                    format!("export '{}' not found", export_name),
-                )
-            })?;
+        let func = instance.get_func(&mut store, export_name).ok_or_else(|| {
+            Error::new(
+                ErrorCode::ExecMissingExport,
+                format!("export '{}' not found", export_name),
+            )
+        })?;
 
         // Prepare parameters (deserialize from args bytes if needed)
         let params = if args.is_empty() {
@@ -269,7 +268,8 @@ impl ExecHandler {
         };
 
         // Prepare results buffer
-        let mut results = vec![wasmtime::component::Val::Bool(false); func.ty(&store).results().len()];
+        let mut results =
+            vec![wasmtime::component::Val::Bool(false); func.ty(&store).results().len()];
 
         // Call the function
         func.call(&mut store, &params, &mut results).map_err(|e| {
@@ -312,7 +312,10 @@ impl ExecHandler {
     pub fn handle_http(&self, _plan: &PlanV1, request: HttpRequest) -> Result<HttpResponse, Error> {
         self.events.info(
             "handling HTTP request",
-            Some(format!("method: {}, path: {}", request.method, request.path)),
+            Some(format!(
+                "method: {}, path: {}",
+                request.method, request.path
+            )),
         );
 
         // For M3, return a basic response
@@ -335,10 +338,8 @@ impl ExecHandler {
         // and enumerating its exports, which is complex with the component model
         let exports = vec!["wasi:cli/run@0.2.0".to_string()];
 
-        self.events.info(
-            "exports listed",
-            Some(format!("count: {}", exports.len())),
-        );
+        self.events
+            .info("exports listed", Some(format!("count: {}", exports.len())));
 
         Ok(exports)
     }
@@ -412,15 +413,12 @@ impl ExecHandler {
         })?;
 
         // Execute the command - returns Result<(), ()>
-        let exit_code = match command
-            .wasi_cli_run()
-            .call_run(&mut store)
-            .map_err(|e| {
-                Error::new(
-                    ErrorCode::ExecTrap,
-                    format!("command execution failed: {}", e),
-                )
-            })? {
+        let exit_code = match command.wasi_cli_run().call_run(&mut store).map_err(|e| {
+            Error::new(
+                ErrorCode::ExecTrap,
+                format!("command execution failed: {}", e),
+            )
+        })? {
             Ok(()) => 0u32,
             Err(()) => 1u32,
         };
@@ -499,7 +497,11 @@ impl ExecHandler {
         });
 
         // Capabilities (sorted for determinism)
-        let mut cap_names: Vec<_> = policy.capabilities.iter().map(|c| c.name.as_str()).collect();
+        let mut cap_names: Vec<_> = policy
+            .capabilities
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
         cap_names.sort();
         for name in cap_names {
             bytes.extend_from_slice(name.as_bytes());
@@ -546,6 +548,9 @@ impl ExecHandler {
     /// Get cache file path for exec key
     fn cache_key_path(&self, exec_key: &Digest) -> PathBuf {
         let hex_key = hex::encode(exec_key);
-        self.cache_dir.join("exec").join(&hex_key[..2]).join(&hex_key[2..])
+        self.cache_dir
+            .join("exec")
+            .join(&hex_key[..2])
+            .join(&hex_key[2..])
     }
 }

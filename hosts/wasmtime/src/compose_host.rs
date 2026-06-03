@@ -48,8 +48,8 @@ use compose::host::invoker::Host as InvokerHost;
 use compose::host::invoker::HostInstance;
 use compose::host::runner::Host as RunnerHost;
 use compose::host::runner::{ExecError, ExecResult, Limits};
-use compose::host::runtime_info::Host as RuntimeInfoHost;
 use compose::host::runtime_info::Fingerprint;
+use compose::host::runtime_info::Host as RuntimeInfoHost;
 
 /// Host-side state shared with every guest call.
 pub struct HostState {
@@ -122,8 +122,7 @@ impl InvokerHost for HostState {
         &mut self,
         _component_bytes: Vec<u8>,
         _limits: Limits,
-    ) -> Result<wasmtime::component::Resource<compose::host::invoker::Instance>, ExecError>
-    {
+    ) -> Result<wasmtime::component::Resource<compose::host::invoker::Instance>, ExecError> {
         Err(ExecError::HostError(
             "invoker.instantiate not yet implemented".to_string(),
         ))
@@ -209,9 +208,7 @@ pub fn instantiate_orchestrator(
         wasi_table: ResourceTable::new(),
         runtime_name: "wasmtime".to_string(),
         runtime_version: env!("CARGO_PKG_VERSION").to_string(),
-        host_target: std::env::consts::ARCH.to_string()
-            + "-"
-            + std::env::consts::OS,
+        host_target: std::env::consts::ARCH.to_string() + "-" + std::env::consts::OS,
     };
 
     let mut store = Store::new(engine, state);

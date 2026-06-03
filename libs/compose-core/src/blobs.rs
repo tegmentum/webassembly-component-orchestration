@@ -44,18 +44,27 @@ impl BlobStore {
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                Error::new(ErrorCode::BlobIoError, format!("failed to create directory: {}", e))
+                Error::new(
+                    ErrorCode::BlobIoError,
+                    format!("failed to create directory: {}", e),
+                )
             })?;
         }
 
         // Write atomically using temp file
         let temp_path = path.with_extension("tmp");
         fs::write(&temp_path, bytes).map_err(|e| {
-            Error::new(ErrorCode::BlobIoError, format!("failed to write blob: {}", e))
+            Error::new(
+                ErrorCode::BlobIoError,
+                format!("failed to write blob: {}", e),
+            )
         })?;
 
         fs::rename(&temp_path, &path).map_err(|e| {
-            Error::new(ErrorCode::BlobIoError, format!("failed to rename blob: {}", e))
+            Error::new(
+                ErrorCode::BlobIoError,
+                format!("failed to rename blob: {}", e),
+            )
         })?;
 
         Ok(digest)
@@ -71,7 +80,10 @@ impl BlobStore {
                     format!("blob {} not found", hex::encode(digest)),
                 )
             } else {
-                Error::new(ErrorCode::BlobIoError, format!("failed to read blob: {}", e))
+                Error::new(
+                    ErrorCode::BlobIoError,
+                    format!("failed to read blob: {}", e),
+                )
             }
         })?;
 
@@ -112,7 +124,10 @@ impl BlobStore {
                     format!("blob {} not found", hex::encode(digest)),
                 )
             } else {
-                Error::new(ErrorCode::BlobIoError, format!("failed to delete blob: {}", e))
+                Error::new(
+                    ErrorCode::BlobIoError,
+                    format!("failed to delete blob: {}", e),
+                )
             }
         })
     }
@@ -121,10 +136,7 @@ impl BlobStore {
     pub fn list_all(&self) -> Vec<Digest> {
         let mut digests = Vec::new();
 
-        for entry in WalkDir::new(&self.root)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
+        for entry in WalkDir::new(&self.root).into_iter().filter_map(|e| e.ok()) {
             if entry.file_type().is_file() {
                 // Reconstruct full digest from sharded path: root/AB/CDEF... -> ABCDEF...
                 if let Some(parent) = entry.path().parent() {
@@ -155,7 +167,6 @@ impl BlobStore {
         self.root.join(dir).join(file)
     }
 }
-
 
 /// Compute SHA-256 digest of bytes
 pub fn compute_digest(bytes: &[u8]) -> Digest {

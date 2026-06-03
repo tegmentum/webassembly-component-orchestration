@@ -1,5 +1,5 @@
 /// Trust verification and signature checking
-use crate::host::{SharedClock, SystemClock};
+use crate::host::SharedClock;
 use crate::types::{Digest, Error, ErrorCode, VerificationMetadata, VerificationResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -103,9 +103,8 @@ impl TrustStore {
         })?;
 
         // Verify
-        let signature_bytes = signature.ok_or_else(|| {
-            Error::new(ErrorCode::TrustVerificationFailed, "signature required")
-        })?;
+        let signature_bytes = signature
+            .ok_or_else(|| Error::new(ErrorCode::TrustVerificationFailed, "signature required"))?;
 
         let metadata = backend.verify(digest, bytes, signature_bytes)?;
 
@@ -235,6 +234,7 @@ impl TrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::SystemClock;
     use tempfile::tempdir;
 
     #[test]

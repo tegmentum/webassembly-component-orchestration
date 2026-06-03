@@ -7,14 +7,15 @@
 //! pkcs11 secret backend, which depends on the wasmtime-backed adapter.
 pub mod compose_host;
 pub mod exec;
-pub mod pkcs11_signer;
 #[cfg(feature = "pkcs11")]
 pub mod pkcs11_backend;
+pub mod pkcs11_signer;
 
 pub use pkcs11_signer::{Pkcs11Signer, Pkcs11SignerConfig};
 
 // Re-export the portable core so downstream consumers
 // (composectl, conformance/runner) keep working unchanged.
+pub use compose_core::types::*;
 pub use compose_core::{
     attest, audit, blobs, emit, events, host, limits, metrics, plan, policy, secrets, trust, types,
 };
@@ -22,7 +23,6 @@ pub use compose_core::{
     AttestationService, AuditLogger, BlobStore, EnforcedPolicy, EventCollector, HostPolicy,
     MetricsCollector, PlanValidator, PolicyEnforcer, SecretManager, SharedClock, SystemClock,
 };
-pub use compose_core::types::*;
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -116,8 +116,10 @@ impl CompositorHost {
         // tenant becomes a hash-chained secure-log stream; entries
         // cannot be altered or deleted without breaking verify_chain.
         let audit_db = config.audit_dir.join("audit.db");
-        let audit_store = secure_log_sqlite::SqliteSecureLogStore::open(&audit_db)
-            .map_err(|e| anyhow::anyhow!("failed to open audit log at {}: {e}", audit_db.display()))?;
+        let audit_store =
+            secure_log_sqlite::SqliteSecureLogStore::open(&audit_db).map_err(|e| {
+                anyhow::anyhow!("failed to open audit log at {}: {e}", audit_db.display())
+            })?;
         let secure_log = secure_log::NativeSecureLog::new(
             Box::new(audit_store),
             Box::new(secure_log::CborEncoder::new()),

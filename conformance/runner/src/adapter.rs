@@ -1,8 +1,6 @@
 /// Host adapter API for conformance testing
 use anyhow::Result;
-use compose_host_wasmtime::{
-    types::*, CompositorHost, HostConfig,
-};
+use compose_host_wasmtime::{types::*, CompositorHost, HostConfig};
 
 /// Host adapter trait for conformance testing
 pub trait HostAdapter {

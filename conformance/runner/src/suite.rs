@@ -165,7 +165,11 @@ impl TestSuite {
     }
 
     /// Run a plan phase test
-    fn run_plan_test<A: HostAdapter>(&self, adapter: &A, test: &TestCase) -> (bool, Option<String>) {
+    fn run_plan_test<A: HostAdapter>(
+        &self,
+        adapter: &A,
+        test: &TestCase,
+    ) -> (bool, Option<String>) {
         match adapter.validate_plan(&test.plan) {
             Ok(_) => {
                 if test.expect_success {
@@ -185,7 +189,13 @@ impl TestSuite {
                         if error_str.contains(expected) {
                             (true, None)
                         } else {
-                            (false, Some(format!("Expected error '{}' but got {}", expected, error_msg)))
+                            (
+                                false,
+                                Some(format!(
+                                    "Expected error '{}' but got {}",
+                                    expected, error_msg
+                                )),
+                            )
                         }
                     } else {
                         (true, None)
@@ -196,7 +206,11 @@ impl TestSuite {
     }
 
     /// Run an emit phase test
-    fn run_emit_test<A: HostAdapter>(&self, adapter: &A, test: &TestCase) -> (bool, Option<String>) {
+    fn run_emit_test<A: HostAdapter>(
+        &self,
+        adapter: &A,
+        test: &TestCase,
+    ) -> (bool, Option<String>) {
         match adapter.emit_plan(&test.plan) {
             Ok(_bytes) => {
                 if test.expect_success {
@@ -216,14 +230,21 @@ impl TestSuite {
     }
 
     /// Run an exec phase test
-    fn run_exec_test<A: HostAdapter>(&self, adapter: &A, test: &TestCase) -> (bool, Option<String>) {
+    fn run_exec_test<A: HostAdapter>(
+        &self,
+        adapter: &A,
+        test: &TestCase,
+    ) -> (bool, Option<String>) {
         match adapter.exec_plan(&test.plan, vec![]) {
             Ok(result) => {
                 if test.expect_success {
                     if result.exit_code == 0 {
                         (true, None)
                     } else {
-                        (false, Some(format!("Non-zero exit code: {}", result.exit_code)))
+                        (
+                            false,
+                            Some(format!("Non-zero exit code: {}", result.exit_code)),
+                        )
                     }
                 } else {
                     (false, Some("Expected failure but got success".to_string()))

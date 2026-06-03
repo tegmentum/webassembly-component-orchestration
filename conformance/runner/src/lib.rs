@@ -3,4 +3,6 @@ pub mod adapter;
 pub mod suite;
 
 pub use adapter::{HostAdapter, WasmtimeAdapter};
-pub use suite::{ConformanceReport, TestCase, TestPhase, TestResult, TestSuite, create_default_tests};
+pub use suite::{
+    create_default_tests, ConformanceReport, TestCase, TestPhase, TestResult, TestSuite,
+};

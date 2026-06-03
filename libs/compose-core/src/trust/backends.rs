@@ -57,7 +57,10 @@ impl TrustBackend for DevTrustBackend {
 
 /// SigStore trust backend
 pub struct SigStoreTrustBackend {
+    // Configured endpoints for a future real SigStore integration (stub today).
+    #[allow(dead_code)]
     fulcio_url: String,
+    #[allow(dead_code)]
     rekor_url: String,
     clock: SharedClock,
 }
@@ -132,6 +135,7 @@ impl TrustBackend for SigStoreTrustBackend {
 
 /// PGP trust backend
 pub struct PgpTrustBackend {
+    #[allow(dead_code)]
     keyring_path: PathBuf,
 }
 

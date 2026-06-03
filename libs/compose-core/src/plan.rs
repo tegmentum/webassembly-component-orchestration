@@ -151,11 +151,7 @@ impl PlanValidator {
     /// Phase 3: Validate graph structure
     fn validate_graph(&self, plan: &PlanV1) -> Result<(), Error> {
         // Build component ID map
-        let comp_map: HashMap<_, _> = plan
-            .components
-            .iter()
-            .map(|c| (c.id.as_str(), c))
-            .collect();
+        let comp_map: HashMap<_, _> = plan.components.iter().map(|c| (c.id.as_str(), c)).collect();
 
         // Check root exists
         if !comp_map.contains_key(plan.root.as_str()) {
@@ -169,7 +165,13 @@ impl PlanValidator {
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
 
-        if self.has_cycle(&plan.root, &plan.bindings, &comp_map, &mut visited, &mut rec_stack)? {
+        if self.has_cycle(
+            &plan.root,
+            &plan.bindings,
+            &comp_map,
+            &mut visited,
+            &mut rec_stack,
+        )? {
             return Err(Error::new(
                 ErrorCode::PlanCycleDetected,
                 "circular dependency detected in component graph",
@@ -205,6 +207,7 @@ impl PlanValidator {
     }
 
     /// Check for cycles in the dependency graph using DFS
+    #[allow(clippy::only_used_in_recursion)]
     fn has_cycle(
         &self,
         node: &str,
@@ -252,7 +255,7 @@ impl PlanValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ComponentSpec, ImportBinding, Policy, SecretBinding};
+    use crate::types::{ComponentSpec, Policy};
     use tempfile::tempdir;
 
     fn create_test_plan() -> PlanV1 {
@@ -295,6 +298,9 @@ mod tests {
 
         let result = validator.validate_schema(&plan);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err().code, ErrorCode::PlanInvalidSchema));
+        assert!(matches!(
+            result.unwrap_err().code,
+            ErrorCode::PlanInvalidSchema
+        ));
     }
 }

@@ -5,7 +5,10 @@ use conformance_runner::{create_default_tests, ConformanceReport, TestSuite, Was
 use std::fs;
 
 #[derive(Parser)]
-#[command(name = "conformance", about = "Run conformance tests against host implementations")]
+#[command(
+    name = "conformance",
+    about = "Run conformance tests against host implementations"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -54,8 +57,7 @@ fn run_conformance(host_id: &str, output_path: Option<&str>, attest: bool) -> Re
     }
 
     // Create host adapter
-    let adapter =
-        WasmtimeAdapter::new().context("Failed to create wasmtime host adapter")?;
+    let adapter = WasmtimeAdapter::new().context("Failed to create wasmtime host adapter")?;
 
     // Create test suite
     let test_cases = create_default_tests();
@@ -111,10 +113,7 @@ fn run_conformance(host_id: &str, output_path: Option<&str>, attest: bool) -> Re
     }
 }
 
-fn generate_attestation(
-    adapter: &WasmtimeAdapter,
-    report: &ConformanceReport,
-) -> Result<String> {
+fn generate_attestation(adapter: &WasmtimeAdapter, report: &ConformanceReport) -> Result<String> {
     use compose_host_wasmtime::attest::{Algorithm, Claim};
 
     // Create a claim for the conformance report

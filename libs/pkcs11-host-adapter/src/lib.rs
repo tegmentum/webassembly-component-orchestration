@@ -7,7 +7,6 @@ use std::ptr;
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use libloading;
 use parking_lot::Mutex;
 use zeroize::Zeroizing;
 
@@ -581,7 +580,7 @@ fn ck_ulong_option(value: ffi::CK_ULONG) -> Option<u64> {
     if value == ffi::CK_UNAVAILABLE_INFORMATION {
         None
     } else {
-        Some(value as u64)
+        Some(value)
     }
 }
 
@@ -720,6 +719,7 @@ fn attribute_value_to_bytes(value: &AttributeValue) -> Result<Vec<u8>, ErrorCode
 const CKA_CLASS: u32 = 0x0000_0000;
 const CKA_TOKEN: u32 = 0x0000_0001;
 const CKA_PRIVATE: u32 = 0x0000_0002;
+#[allow(dead_code)]
 const CKA_LABEL: u32 = 0x0000_0003;
 const CKA_TRUSTED: u32 = 0x0000_0086;
 const CKA_MODULUS_BITS: u32 = 0x0000_0121;
@@ -743,7 +743,9 @@ const CKA_COPYABLE: u32 = 0x0000_0171;
 const CKA_DESTROYABLE: u32 = 0x0000_0172;
 const CKA_ALWAYS_AUTHENTICATE: u32 = 0x0000_0202;
 const CKA_VALUE_LEN: u32 = 0x0000_0161;
+#[allow(dead_code)]
 const CKA_VALUE: u32 = 0x0000_0011;
+#[allow(dead_code)]
 const CKO_DATA: u32 = 0x0000_0003;
 
 fn decode_attribute_value(tag: u32, data: &[u8]) -> AttributeValue {
@@ -818,20 +820,11 @@ fn read_u64(data: &[u8]) -> Option<u64> {
 }
 
 /// Native PKCS#11 module state guarded by a mutex.
+#[derive(Default)]
 struct NativePkcs11 {
     module_path: Option<String>,
     library: Option<libloading::Library>,
     initialized: bool,
-}
-
-impl Default for NativePkcs11 {
-    fn default() -> Self {
-        Self {
-            module_path: None,
-            library: None,
-            initialized: false,
-        }
-    }
 }
 
 impl NativePkcs11 {
@@ -839,7 +832,9 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)
+        self.library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)
     }
 
     fn load_module(&mut self, module_path: &Path) -> Result<(), ErrorCode> {
@@ -869,7 +864,10 @@ impl NativePkcs11 {
             return Ok(());
         }
 
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_initialize: libloading::Symbol<
@@ -891,7 +889,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Ok(());
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
         unsafe {
             let c_finalize: libloading::Symbol<unsafe extern "C" fn(*const c_void) -> ffi::CK_RV> =
                 lib.get(b"C_Finalize\0")
@@ -909,7 +910,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_get_slot_list: libloading::Symbol<
@@ -957,7 +961,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_get_info: libloading::Symbol<
@@ -984,7 +991,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_get_slot_info: libloading::Symbol<
@@ -1011,7 +1021,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_get_token_info: libloading::Symbol<
@@ -1031,12 +1044,12 @@ impl NativePkcs11 {
                 model: trim_ck_utf8(&info.model),
                 serial_number: trim_ck_utf8(&info.serial_number),
                 token_flags: token_flags_from_ck(info.flags),
-                max_session_count: info.max_session_count as u64,
-                session_count: info.session_count as u64,
-                max_rw_session_count: info.max_rw_session_count as u64,
-                rw_session_count: info.rw_session_count as u64,
-                max_pin_len: info.max_pin_len as u64,
-                min_pin_len: info.min_pin_len as u64,
+                max_session_count: info.max_session_count,
+                session_count: info.session_count,
+                max_rw_session_count: info.max_rw_session_count,
+                rw_session_count: info.rw_session_count,
+                max_pin_len: info.max_pin_len,
+                min_pin_len: info.min_pin_len,
                 total_public_memory: ck_ulong_option(info.total_public_memory),
                 free_public_memory: ck_ulong_option(info.free_public_memory),
                 total_private_memory: ck_ulong_option(info.total_private_memory),
@@ -1052,7 +1065,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_get_mechanism_list: libloading::Symbol<
@@ -1095,7 +1111,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_get_mechanism_info: libloading::Symbol<
@@ -1117,8 +1136,8 @@ impl NativePkcs11 {
                 return Err(rv_to_error(rv));
             }
             Ok(MechanismInfo {
-                min_key_size: info.min_key_size as u64,
-                max_key_size: info.max_key_size as u64,
+                min_key_size: info.min_key_size,
+                max_key_size: info.max_key_size,
                 mechanism_flags: mechanism_flags_from_ck(info.flags),
             })
         }
@@ -1133,7 +1152,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_init_token: libloading::Symbol<
@@ -1175,7 +1197,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_close_all_sessions: libloading::Symbol<
@@ -1195,7 +1220,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_login: libloading::Symbol<
@@ -1232,7 +1260,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_login: libloading::Symbol<
@@ -1269,7 +1300,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_logout: libloading::Symbol<
@@ -1289,7 +1323,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_init_pin: libloading::Symbol<
@@ -1318,7 +1355,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_set_pin: libloading::Symbol<
@@ -1360,7 +1400,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_cancel_function: libloading::Symbol<
@@ -1380,7 +1423,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_seed_random: libloading::Symbol<
@@ -1409,7 +1455,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_generate_random: libloading::Symbol<
@@ -1439,7 +1488,10 @@ impl NativePkcs11 {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
         let mut attrs = AttributeList::from_template(template)?;
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_create_object: libloading::Symbol<
@@ -1476,7 +1528,10 @@ impl NativePkcs11 {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
         let mut attrs = AttributeList::from_template(template)?;
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_copy_object: libloading::Symbol<
@@ -1509,7 +1564,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_destroy_object: libloading::Symbol<
@@ -1538,7 +1596,10 @@ impl NativePkcs11 {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
         let mut attrs = AttributeList::from_template(template)?;
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_set_attribute_value: libloading::Symbol<
@@ -1573,7 +1634,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_get_attribute_value: libloading::Symbol<
@@ -1657,7 +1721,10 @@ impl NativePkcs11 {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
         let mut attrs = AttributeList::from_template(template)?;
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_find_objects_init: libloading::Symbol<
@@ -1685,7 +1752,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_find_objects: libloading::Symbol<
@@ -1720,7 +1790,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_find_objects_final: libloading::Symbol<
@@ -2891,7 +2964,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_open_session: libloading::Symbol<
@@ -2925,7 +3001,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_close_session: libloading::Symbol<
@@ -2945,7 +3024,10 @@ impl NativePkcs11 {
         if !self.initialized {
             return Err(ErrorCode::CryptokiNotInitialized);
         }
-        let lib = self.library.as_ref().ok_or(ErrorCode::CryptokiNotInitialized)?;
+        let lib = self
+            .library
+            .as_ref()
+            .ok_or(ErrorCode::CryptokiNotInitialized)?;
 
         unsafe {
             let c_get_session_info: libloading::Symbol<
@@ -2965,7 +3047,7 @@ impl NativePkcs11 {
                 slot: info.slot_id as u32,
                 state: session_state_from_ck(info.state),
                 session_flags: session_flags_from_ck(info.flags),
-                device_error: info.device_error as u64,
+                device_error: info.device_error,
             })
         }
     }
@@ -4346,37 +4428,20 @@ mod ffi {
     pub const CKF_EXTENSION: CK_FLAGS = 0x8000_0000;
 
     #[repr(C)]
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Default)]
     pub struct CK_VERSION {
         pub major: u8,
         pub minor: u8,
     }
 
-    impl Default for CK_VERSION {
-        fn default() -> Self {
-            Self { major: 0, minor: 0 }
-        }
-    }
-
     #[repr(C)]
+    #[derive(Default)]
     pub struct CK_INFO {
         pub cryptoki_version: CK_VERSION,
         pub manufacturer_id: [CK_UTF8CHAR; 32],
         pub flags: CK_FLAGS,
         pub library_description: [CK_UTF8CHAR; 32],
         pub library_version: CK_VERSION,
-    }
-
-    impl Default for CK_INFO {
-        fn default() -> Self {
-            Self {
-                cryptoki_version: CK_VERSION::default(),
-                manufacturer_id: [0; 32],
-                flags: 0,
-                library_description: [0; 32],
-                library_version: CK_VERSION::default(),
-            }
-        }
     }
 
     #[repr(C)]
@@ -4448,20 +4513,11 @@ mod ffi {
     }
 
     #[repr(C)]
+    #[derive(Default)]
     pub struct CK_MECHANISM_INFO {
         pub min_key_size: CK_ULONG,
         pub max_key_size: CK_ULONG,
         pub flags: CK_FLAGS,
-    }
-
-    impl Default for CK_MECHANISM_INFO {
-        fn default() -> Self {
-            Self {
-                min_key_size: 0,
-                max_key_size: 0,
-                flags: 0,
-            }
-        }
     }
 
     #[repr(C)]

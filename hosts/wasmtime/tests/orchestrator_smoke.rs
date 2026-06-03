@@ -65,9 +65,10 @@ fn load_wasm_or_skip() -> Option<(wasmtime::Engine, Vec<u8>)> {
 /// `runtime-info.get-fingerprint` and returns the runtime name.
 #[test]
 fn smoke_roundtrip_returns_runtime_name() {
-    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
-    let name = compose_host::run_smoke(&engine, &wasm)
-        .expect("smoke roundtrip should succeed");
+    let Some((engine, wasm)) = load_wasm_or_skip() else {
+        return;
+    };
+    let name = compose_host::run_smoke(&engine, &wasm).expect("smoke roundtrip should succeed");
     assert_eq!(name, "wasmtime");
 }
 
@@ -78,11 +79,13 @@ fn smoke_roundtrip_returns_runtime_name() {
 fn digest_computed_inside_wasm_matches_native_sha256() {
     use sha2::{Digest, Sha256};
 
-    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+    let Some((engine, wasm)) = load_wasm_or_skip() else {
+        return;
+    };
 
     let payload = b"the quick brown fox jumps over the lazy dog";
-    let from_wasm = compose_host::run_digest(&engine, &wasm, payload)
-        .expect("digest roundtrip should succeed");
+    let from_wasm =
+        compose_host::run_digest(&engine, &wasm, payload).expect("digest roundtrip should succeed");
 
     let mut hasher = Sha256::new();
     hasher.update(payload);
@@ -102,7 +105,9 @@ fn digest_computed_inside_wasm_matches_native_sha256() {
 /// receives a 32-byte SHA-256 digest back.
 #[test]
 fn plan_compute_digest_crosses_wit_boundary() {
-    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+    let Some((engine, wasm)) = load_wasm_or_skip() else {
+        return;
+    };
 
     let plan = compose_host::sample_plan();
     let digest = compose_host::run_plan_compute_digest(&engine, &wasm, plan)
@@ -116,7 +121,9 @@ fn plan_compute_digest_crosses_wit_boundary() {
 /// converts cleanly in both directions across the WIT boundary.
 #[test]
 fn plan_serialize_deserialize_round_trip() {
-    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+    let Some((engine, wasm)) = load_wasm_or_skip() else {
+        return;
+    };
 
     let original = compose_host::sample_plan();
     let restored = compose_host::run_plan_roundtrip(&engine, &wasm, original.clone())
@@ -136,7 +143,9 @@ fn plan_serialize_deserialize_round_trip() {
 /// is canonical (no map-ordering or float-NaN nondeterminism).
 #[test]
 fn plan_digest_is_deterministic() {
-    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+    let Some((engine, wasm)) = load_wasm_or_skip() else {
+        return;
+    };
 
     let plan = compose_host::sample_plan();
     let d1 = compose_host::run_plan_compute_digest(&engine, &wasm, plan.clone()).unwrap();
@@ -152,7 +161,9 @@ fn plan_digest_is_deterministic() {
 fn plan_validate_succeeds_when_blob_present() {
     use sha2::{Digest, Sha256};
 
-    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+    let Some((engine, wasm)) = load_wasm_or_skip() else {
+        return;
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let blobs_dir = temp.path().join("blobs");
     std::fs::create_dir_all(&blobs_dir).unwrap();
@@ -186,7 +197,9 @@ fn plan_validate_succeeds_when_blob_present() {
 /// from the host filesystem (rather than rubber-stamping).
 #[test]
 fn plan_validate_fails_when_blob_missing() {
-    let Some((engine, wasm)) = load_wasm_or_skip() else { return };
+    let Some((engine, wasm)) = load_wasm_or_skip() else {
+        return;
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let blobs_dir = temp.path().join("blobs");
     std::fs::create_dir_all(&blobs_dir).unwrap();

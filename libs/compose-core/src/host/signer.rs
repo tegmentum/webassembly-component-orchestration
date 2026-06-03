@@ -111,14 +111,20 @@ pub fn verify_ed25519(
     message: &[u8],
     signature: &[u8],
 ) -> Result<bool, SignerError> {
-    let key_bytes: [u8; 32] = public_key
-        .try_into()
-        .map_err(|_| SignerError::InvalidKey(format!("expected 32-byte ed25519 key, got {}", public_key.len())))?;
-    let verifying_key = VerifyingKey::from_bytes(&key_bytes)
-        .map_err(|e| SignerError::InvalidKey(e.to_string()))?;
-    let sig_bytes: [u8; 64] = signature
-        .try_into()
-        .map_err(|_| SignerError::InvalidSignature(format!("expected 64-byte ed25519 signature, got {}", signature.len())))?;
+    let key_bytes: [u8; 32] = public_key.try_into().map_err(|_| {
+        SignerError::InvalidKey(format!(
+            "expected 32-byte ed25519 key, got {}",
+            public_key.len()
+        ))
+    })?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&key_bytes).map_err(|e| SignerError::InvalidKey(e.to_string()))?;
+    let sig_bytes: [u8; 64] = signature.try_into().map_err(|_| {
+        SignerError::InvalidSignature(format!(
+            "expected 64-byte ed25519 signature, got {}",
+            signature.len()
+        ))
+    })?;
     let sig = Signature::from_bytes(&sig_bytes);
     Ok(verifying_key.verify_strict(message, &sig).is_ok())
 }

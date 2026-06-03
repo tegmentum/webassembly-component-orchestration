@@ -4,11 +4,7 @@ use tracing::info;
 
 fn main() -> Result<()> {
     init_tracing();
-    info!(
-        host = "wasmtime",
-        event = "boot",
-        "compose host starting"
-    );
+    info!(host = "wasmtime", event = "boot", "compose host starting");
 
     // Create host with default config
     let config = HostConfig::default();
@@ -118,9 +114,7 @@ fn demo_secret_resolution(host: &CompositorHost) -> Result<()> {
     );
 
     // List available secrets
-    let secrets = host
-        .secrets
-        .list_secrets(Some(&"dev://".to_string()))?;
+    let secrets = host.secrets.list_secrets(Some(&"dev://".to_string()))?;
     info!(count = secrets.len(), "available secrets in dev backend");
 
     // Validate token
@@ -138,10 +132,7 @@ fn demo_trust_verification(host: &CompositorHost) -> Result<()> {
     let artifact_bytes = b"test artifact content";
     let digest = host.blobs.put(artifact_bytes)?;
 
-    info!(
-        digest = hex::encode(&digest),
-        "created test artifact"
-    );
+    info!(digest = hex::encode(&digest), "created test artifact");
 
     // Create a dummy signature (in production, this would be real)
     let signature = b"{\"identity\": \"test@example.com\"}";
@@ -228,7 +219,10 @@ fn demo_policy_enforcement(host: &CompositorHost) -> Result<()> {
         },
     };
 
-    match host.policy_enforcer.enforce_policy(&plan_with_denied_cap.policy) {
+    match host
+        .policy_enforcer
+        .enforce_policy(&plan_with_denied_cap.policy)
+    {
         Ok(_) => info!("policy enforcement unexpectedly succeeded"),
         Err(e) => info!("policy enforcement correctly failed: {}", e),
     }
@@ -258,7 +252,10 @@ fn demo_policy_enforcement(host: &CompositorHost) -> Result<()> {
         },
     };
 
-    match host.policy_enforcer.enforce_policy(&plan_with_optional_cap.policy) {
+    match host
+        .policy_enforcer
+        .enforce_policy(&plan_with_optional_cap.policy)
+    {
         Ok(enforced) => {
             info!(
                 allowed_caps = enforced.capabilities.len(),
@@ -285,13 +282,16 @@ fn demo_policy_enforcement(host: &CompositorHost) -> Result<()> {
         }],
         tenant: None,
         limits: ResourceLimits {
-            cpu_ms: Some(100_000), // Exceeds host max (60s)
+            cpu_ms: Some(100_000),                 // Exceeds host max (60s)
             memory_bytes: Some(256 * 1024 * 1024), // Within host max
-            io_ops: Some(5_000), // Within host max
+            io_ops: Some(5_000),                   // Within host max
         },
     };
 
-    match host.policy_enforcer.enforce_limits(&plan_with_limits.limits) {
+    match host
+        .policy_enforcer
+        .enforce_limits(&plan_with_limits.limits)
+    {
         Ok(enforced) => {
             info!(
                 cpu_ms = enforced.cpu_ms,
@@ -371,12 +371,18 @@ fn demo_tenant_isolation(host: &CompositorHost) -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    info!("tenant-b execution failed (expected for minimal component): {}", e);
+                    info!(
+                        "tenant-b execution failed (expected for minimal component): {}",
+                        e
+                    );
                 }
             }
         }
         Err(e) => {
-            info!("tenant-a execution failed (expected for minimal component): {}", e);
+            info!(
+                "tenant-a execution failed (expected for minimal component): {}",
+                e
+            );
             info!("tenant isolation is still demonstrated via policy enforcement and audit logs");
         }
     }
@@ -475,20 +481,18 @@ fn demo_metrics_collection(host: &CompositorHost) -> Result<()> {
 
     // List all metrics
     let all_metrics = host.metrics.list(None, None, None);
-    info!(
-        total_metrics = all_metrics.len(),
-        "total metrics collected"
-    );
+    info!(total_metrics = all_metrics.len(), "total metrics collected");
 
     // List exec metrics
     let exec_metrics = host.metrics.list(Some("exec"), None, None);
-    info!(
-        exec_metrics = exec_metrics.len(),
-        "execution metrics"
-    );
+    info!(exec_metrics = exec_metrics.len(), "execution metrics");
 
     // Get exec duration summary
-    if let Some(summary) = host.metrics.summary("exec.duration_ms", compose_host_wasmtime::metrics::AggregationPeriod::Minute, None) {
+    if let Some(summary) = host.metrics.summary(
+        "exec.duration_ms",
+        compose_host_wasmtime::metrics::AggregationPeriod::Minute,
+        None,
+    ) {
         info!(
             metric = "exec.duration_ms",
             count = summary.count,
@@ -541,10 +545,10 @@ fn demo_attestation(host: &CompositorHost) -> Result<()> {
     );
 
     // Sign the claim
-    let attestation = host.attestation.attest(
-        claim,
-        compose_host_wasmtime::attest::Algorithm::Ed25519,
-    ).map_err(|e| anyhow::anyhow!(e))?;
+    let attestation = host
+        .attestation
+        .attest(claim, compose_host_wasmtime::attest::Algorithm::Ed25519)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     info!(
         algorithm = ?attestation.algorithm,
@@ -553,7 +557,10 @@ fn demo_attestation(host: &CompositorHost) -> Result<()> {
     );
 
     // Verify the attestation
-    let verification = host.attestation.verify(&attestation).map_err(|e| anyhow::anyhow!(e))?;
+    let verification = host
+        .attestation
+        .verify(&attestation)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     info!(
         valid = verification.valid,
@@ -562,7 +569,10 @@ fn demo_attestation(host: &CompositorHost) -> Result<()> {
     );
 
     // Export to JSON format
-    let json_export = host.attestation.export(&attestation, "json").map_err(|e| anyhow::anyhow!(e))?;
+    let json_export = host
+        .attestation
+        .export(&attestation, "json")
+        .map_err(|e| anyhow::anyhow!(e))?;
     info!(
         format = "json",
         size_bytes = json_export.len(),
@@ -570,7 +580,10 @@ fn demo_attestation(host: &CompositorHost) -> Result<()> {
     );
 
     // Export to SLSA format
-    let slsa_export = host.attestation.export(&attestation, "slsa").map_err(|e| anyhow::anyhow!(e))?;
+    let slsa_export = host
+        .attestation
+        .export(&attestation, "slsa")
+        .map_err(|e| anyhow::anyhow!(e))?;
     info!(
         format = "slsa",
         size_bytes = slsa_export.len(),
@@ -579,9 +592,10 @@ fn demo_attestation(host: &CompositorHost) -> Result<()> {
     );
 
     // Get public key for verification
-    let public_key = host.attestation.get_public_key(
-        compose_host_wasmtime::attest::Algorithm::Ed25519
-    ).map_err(|e| anyhow::anyhow!(e))?;
+    let public_key = host
+        .attestation
+        .get_public_key(compose_host_wasmtime::attest::Algorithm::Ed25519)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     info!(
         key_algorithm = "ed25519",

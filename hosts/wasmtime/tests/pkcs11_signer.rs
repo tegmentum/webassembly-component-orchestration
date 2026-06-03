@@ -28,10 +28,9 @@ fn pkcs11_signer_signs_and_verifies() {
         );
         return;
     };
-    let conf_path =
-        std::env::var("KEYSTORE_TEST_CONF").expect("KEYSTORE_TEST_CONF must be set with the component");
-    let token_dir =
-        std::env::temp_dir().join(format!("pkcs11-signer-test-{}", std::process::id()));
+    let conf_path = std::env::var("KEYSTORE_TEST_CONF")
+        .expect("KEYSTORE_TEST_CONF must be set with the component");
+    let token_dir = std::env::temp_dir().join(format!("pkcs11-signer-test-{}", std::process::id()));
 
     let mut cfg = Config::new();
     cfg.wasm_component_model(true);
@@ -75,7 +74,9 @@ fn pkcs11_signer_signs_and_verifies() {
 #[test]
 fn compositor_host_attests_with_pkcs11_signer() {
     let Some((component_path, conf_path)) = test_paths() else {
-        eprintln!("skipping compositor_host_attests_with_pkcs11_signer: set KEYSTORE_TEST_COMPONENT/CONF");
+        eprintln!(
+            "skipping compositor_host_attests_with_pkcs11_signer: set KEYSTORE_TEST_COMPONENT/CONF"
+        );
         return;
     };
     let work = tempfile::tempdir().expect("tempdir");
@@ -113,8 +114,18 @@ fn compositor_host_attests_with_pkcs11_signer() {
         .attestation
         .attest(claim, Algorithm::Ed25519)
         .expect("attest via PKCS#11 signer");
-    assert_eq!(attestation.public_key.len(), 32, "softhsm ed25519 public key");
+    assert_eq!(
+        attestation.public_key.len(),
+        32,
+        "softhsm ed25519 public key"
+    );
 
-    let result = host.attestation.verify(&attestation).expect("verify attestation");
-    assert!(result.valid, "attestation signed by the softhsm key must verify");
+    let result = host
+        .attestation
+        .verify(&attestation)
+        .expect("verify attestation");
+    assert!(
+        result.valid,
+        "attestation signed by the softhsm key must verify"
+    );
 }

@@ -5,9 +5,9 @@ use crate::plan::PlanValidator;
 use crate::types::{CompositionResult, Digest, Error, ErrorCode, PlanV1};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use wasmparser::{Validator, WasmFeatures};
 use wasm_compose::composer::ComponentComposer;
 use wasm_compose::config::{Config, Dependency, Instantiation};
+use wasmparser::{Validator, WasmFeatures};
 
 /// Emit handler for composition
 pub struct EmitHandler {
@@ -98,9 +98,7 @@ impl EmitHandler {
     /// Check if an artifact is already cached by emit-key
     pub fn check_cache(&self, emit_key: &Digest) -> Option<Digest> {
         let cache_path = self.cache_key_path(emit_key);
-        std::fs::read(&cache_path)
-            .ok()
-            .filter(|d| d.len() == 32)
+        std::fs::read(&cache_path).ok().filter(|d| d.len() == 32)
     }
 
     /// Compute emit key for caching
@@ -138,7 +136,10 @@ impl EmitHandler {
     /// Get cache file path for emit key
     fn cache_key_path(&self, emit_key: &Digest) -> PathBuf {
         let hex_key = hex::encode(emit_key);
-        self.cache_dir.join("emit").join(&hex_key[..2]).join(&hex_key[2..])
+        self.cache_dir
+            .join("emit")
+            .join(&hex_key[..2])
+            .join(&hex_key[2..])
     }
 
     /// Internal composition implementation using component linking
@@ -170,14 +171,12 @@ impl EmitHandler {
         if plan.components.len() == 1 && plan.bindings.is_empty() {
             self.events
                 .info("single component, no composition needed", None);
-            return component_map
-                .remove(&plan.root)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::EmitCompositionFailed,
-                        format!("root component {} not found", plan.root),
-                    )
-                });
+            return component_map.remove(&plan.root).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!("root component {} not found", plan.root),
+                )
+            });
         }
 
         // Step 3: Perform composition by building a composed component
@@ -254,8 +253,10 @@ impl EmitHandler {
             )
         })?;
 
-        let mut config = Config::default();
-        config.dir = work.path.clone();
+        let mut config = Config {
+            dir: work.path.clone(),
+            ..Config::default()
+        };
 
         // Stage each provider once (keyed by provider id) and register it as a
         // named dependency; map every import to its provider via an explicit
@@ -279,9 +280,12 @@ impl EmitHandler {
                     )
                 })?;
 
-                config
-                    .dependencies
-                    .insert(binding.provider_id.clone(), Dependency { path: file_name.into() });
+                config.dependencies.insert(
+                    binding.provider_id.clone(),
+                    Dependency {
+                        path: file_name.into(),
+                    },
+                );
 
                 self.events.trace(
                     "staged provider",
@@ -364,9 +368,8 @@ impl StagingDir {
     /// Create a unique staging directory beneath `base`.
     fn new(base: &Path) -> Result<Self, Error> {
         let mut nonce = [0u8; 8];
-        getrandom::fill(&mut nonce).map_err(|e| {
-            Error::new(ErrorCode::InternalError, format!("entropy failure: {}", e))
-        })?;
+        getrandom::fill(&mut nonce)
+            .map_err(|e| Error::new(ErrorCode::InternalError, format!("entropy failure: {}", e)))?;
         let path = base.join("compose-tmp").join(hex::encode(nonce));
         std::fs::create_dir_all(&path).map_err(|e| {
             Error::new(
@@ -585,7 +588,7 @@ mod tests {
                     source: None,
                 },
             ],
-            bindings: vec![],  // No bindings to avoid cycle detection issues
+            bindings: vec![], // No bindings to avoid cycle detection issues
             secrets: vec![],
             policy: Policy::default(),
         };

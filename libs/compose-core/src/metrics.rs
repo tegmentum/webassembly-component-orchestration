@@ -164,7 +164,12 @@ impl MetricsCollector {
     }
 
     /// Get metric summary
-    pub fn summary(&self, name: &str, _period: AggregationPeriod, since: Option<u64>) -> Option<MetricSummary> {
+    pub fn summary(
+        &self,
+        name: &str,
+        _period: AggregationPeriod,
+        since: Option<u64>,
+    ) -> Option<MetricSummary> {
         let metrics = self.list(Some(name), None, since);
 
         if metrics.is_empty() {
@@ -182,7 +187,9 @@ impl MetricsCollector {
                 MetricValue::Counter { value } => *value as f64,
                 MetricValue::Gauge { value } => *value,
                 MetricValue::DurationMs { value } => *value as f64,
-                MetricValue::Histogram { values } => values.iter().sum::<f64>() / values.len() as f64,
+                MetricValue::Histogram { values } => {
+                    values.iter().sum::<f64>() / values.len() as f64
+                }
             };
 
             sum += value;
@@ -244,12 +251,12 @@ mod tests {
     fn test_gauge_metric() {
         let collector = MetricsCollector::default();
 
-        collector.gauge("test.gauge", 3.14, vec![]);
+        collector.gauge("test.gauge", 2.5, vec![]);
 
         let metrics = collector.list(Some("test.gauge"), None, None);
         assert_eq!(metrics.len(), 1);
         match &metrics[0].value {
-            MetricValue::Gauge { value } => assert!((value - 3.14).abs() < 0.001),
+            MetricValue::Gauge { value } => assert!((value - 2.5).abs() < 0.001),
             _ => panic!("Expected gauge value"),
         }
     }
@@ -291,7 +298,9 @@ mod tests {
         collector.counter("test.stat", 20, vec![]);
         collector.counter("test.stat", 30, vec![]);
 
-        let summary = collector.summary("test.stat", AggregationPeriod::Minute, None).unwrap();
+        let summary = collector
+            .summary("test.stat", AggregationPeriod::Minute, None)
+            .unwrap();
         assert_eq!(summary.count, 3);
         assert_eq!(summary.sum, 60.0);
         assert_eq!(summary.min, 10.0);

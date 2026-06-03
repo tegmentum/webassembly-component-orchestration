@@ -71,6 +71,8 @@ pub trait SecretBackend: Send + Sync {
 struct TokenEntry {
     secret_id: SecretId,
     backend_uri: BackendUri,
+    /// Retained for token bookkeeping/debugging; not read yet.
+    #[allow(dead_code)]
     issued_at: u64,
     expires_at: Option<u64>,
 }
@@ -160,15 +162,17 @@ impl SecretManager {
     }
 
     /// Resolve a secret ID to an opaque token
-    pub fn resolve(&self, id: &SecretId, backend_uri: &BackendUri) -> Result<SecretToken, SecretError> {
+    pub fn resolve(
+        &self,
+        id: &SecretId,
+        backend_uri: &BackendUri,
+    ) -> Result<SecretToken, SecretError> {
         // Extract scheme from URI
         let scheme = Self::extract_scheme(backend_uri)?;
 
         // Get backend
         let backends = self.backends.lock().unwrap();
-        let backend = backends
-            .get(&scheme)
-            .ok_or_else(|| SecretError::InvalidBackend)?;
+        let backend = backends.get(&scheme).ok_or(SecretError::InvalidBackend)?;
 
         // Verify secret exists
         backend.resolve(id)?;
@@ -190,9 +194,7 @@ impl SecretManager {
     /// Get secret value by token (host-only)
     pub fn get_value(&self, token: &SecretToken) -> Result<Vec<u8>, SecretError> {
         let tokens = self.tokens.lock().unwrap();
-        let entry = tokens
-            .get(token)
-            .ok_or(SecretError::InvalidToken)?;
+        let entry = tokens.get(token).ok_or(SecretError::InvalidToken)?;
 
         // Check expiration
         if let Some(expires_at) = entry.expires_at {
@@ -204,9 +206,7 @@ impl SecretManager {
         // Get backend
         let scheme = Self::extract_scheme(&entry.backend_uri)?;
         let backends = self.backends.lock().unwrap();
-        let backend = backends
-            .get(&scheme)
-            .ok_or_else(|| SecretError::InvalidBackend)?;
+        let backend = backends.get(&scheme).ok_or(SecretError::InvalidBackend)?;
 
         // Get secret value
         backend.resolve(&entry.secret_id)
@@ -281,27 +281,24 @@ impl SecretManager {
     /// Get metadata about a secret
     pub fn get_metadata(&self, token: &SecretToken) -> Result<SecretMetadata, SecretError> {
         let tokens = self.tokens.lock().unwrap();
-        let entry = tokens
-            .get(token)
-            .ok_or(SecretError::InvalidToken)?;
+        let entry = tokens.get(token).ok_or(SecretError::InvalidToken)?;
 
         let scheme = Self::extract_scheme(&entry.backend_uri)?;
         let backends = self.backends.lock().unwrap();
-        let backend = backends
-            .get(&scheme)
-            .ok_or_else(|| SecretError::InvalidBackend)?;
+        let backend = backends.get(&scheme).ok_or(SecretError::InvalidBackend)?;
 
         backend.get_metadata(&entry.secret_id)
     }
 
     /// List available secret IDs
-    pub fn list_secrets(&self, backend_uri: Option<&BackendUri>) -> Result<Vec<SecretId>, SecretError> {
+    pub fn list_secrets(
+        &self,
+        backend_uri: Option<&BackendUri>,
+    ) -> Result<Vec<SecretId>, SecretError> {
         if let Some(uri) = backend_uri {
             let scheme = Self::extract_scheme(uri)?;
             let backends = self.backends.lock().unwrap();
-            let backend = backends
-                .get(&scheme)
-                .ok_or_else(|| SecretError::InvalidBackend)?;
+            let backend = backends.get(&scheme).ok_or(SecretError::InvalidBackend)?;
             backend.list_secrets()
         } else {
             // List from all backends
@@ -382,10 +379,7 @@ mod tests {
 
     #[test]
     fn test_extract_scheme() {
-        assert_eq!(
-            SecretManager::extract_scheme("dev://").unwrap(),
-            "dev"
-        );
+        assert_eq!(SecretManager::extract_scheme("dev://").unwrap(), "dev");
         assert_eq!(
             SecretManager::extract_scheme("pkcs11://slot0").unwrap(),
             "pkcs11"
@@ -431,7 +425,9 @@ mod tests {
         backend.add_secret("test", b"test-value");
         manager.register_backend(Box::new(backend)).unwrap();
 
-        let token = manager.resolve(&"test".to_string(), &"dev://".to_string()).unwrap();
+        let token = manager
+            .resolve(&"test".to_string(), &"dev://".to_string())
+            .unwrap();
 
         // Valid immediately.
         assert!(manager.validate_token(&token).unwrap());
@@ -478,7 +474,9 @@ mod tests {
         backend.add_secret("test", b"test-value");
         manager.register_backend(Box::new(backend)).unwrap();
 
-        let token = manager.resolve(&"test".to_string(), &"dev://".to_string()).unwrap();
+        let token = manager
+            .resolve(&"test".to_string(), &"dev://".to_string())
+            .unwrap();
 
         assert!(manager.validate_token(&token).unwrap());
 
@@ -499,9 +497,15 @@ mod tests {
         backend.add_secret("test3", b"value3");
         manager.register_backend(Box::new(backend)).unwrap();
 
-        let token1 = manager.resolve(&"test1".to_string(), &"dev://".to_string()).unwrap();
-        let token2 = manager.resolve(&"test2".to_string(), &"dev://".to_string()).unwrap();
-        let token3 = manager.resolve(&"test3".to_string(), &"dev://".to_string()).unwrap();
+        let token1 = manager
+            .resolve(&"test1".to_string(), &"dev://".to_string())
+            .unwrap();
+        let token2 = manager
+            .resolve(&"test2".to_string(), &"dev://".to_string())
+            .unwrap();
+        let token3 = manager
+            .resolve(&"test3".to_string(), &"dev://".to_string())
+            .unwrap();
 
         let stats = manager.token_stats();
         assert_eq!(stats.total, 3);
@@ -540,10 +544,16 @@ mod tests {
         manager.register_backend(Box::new(backend)).unwrap();
 
         // Two expiring tokens, one never-expiring.
-        let _token1 = manager.resolve(&"test1".to_string(), &"dev://".to_string()).unwrap();
-        let _token2 = manager.resolve(&"test2".to_string(), &"dev://".to_string()).unwrap();
+        let _token1 = manager
+            .resolve(&"test1".to_string(), &"dev://".to_string())
+            .unwrap();
+        let _token2 = manager
+            .resolve(&"test2".to_string(), &"dev://".to_string())
+            .unwrap();
         manager.set_token_ttl(TokenTtl::Never);
-        let _token3 = manager.resolve(&"test3".to_string(), &"dev://".to_string()).unwrap();
+        let _token3 = manager
+            .resolve(&"test3".to_string(), &"dev://".to_string())
+            .unwrap();
 
         let stats = manager.token_stats();
         assert_eq!(stats.total, 3);

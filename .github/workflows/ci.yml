@@ -28,11 +28,12 @@ jobs:
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Install nightly toolchain
+      # Install the toolchain pinned by rust-toolchain.toml (channel +
+      # rustfmt/clippy components), so the fmt and clippy gates are
+      # deterministic instead of tracking the latest nightly.
+      - name: Install pinned Rust toolchain
         if: steps.cargo.outputs.found == 'true'
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt, clippy
+        run: rustup show
       - name: cargo fmt --check
         if: steps.cargo.outputs.found == 'true'
         run: cargo fmt --all -- --check
@@ -65,9 +66,9 @@ jobs:
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Install nightly toolchain
+      - name: Install pinned Rust toolchain
         if: steps.ctl.outputs.found == 'true'
-        uses: dtolnay/rust-toolchain@nightly
+        run: rustup show
       - name: Build composectl
         if: steps.ctl.outputs.found == 'true'
         working-directory: tools/composectl

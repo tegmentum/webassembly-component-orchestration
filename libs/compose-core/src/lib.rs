@@ -27,11 +27,11 @@ pub use audit::{AuditLogger, SharedSecureLog};
 pub use blobs::BlobStore;
 // Re-export the secure-log surface host crates need to construct a
 // backend without taking their own direct dependency on the crate.
-pub use secure_log;
 pub use events::EventCollector;
 pub use host::{Clock, SharedClock, SystemClock};
 pub use metrics::MetricsCollector;
 pub use plan::PlanValidator;
 pub use policy::{EnforcedPolicy, HostPolicy, PolicyEnforcer};
 pub use secrets::SecretManager;
+pub use secure_log;
 pub use types::*;

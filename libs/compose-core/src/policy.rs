@@ -1,5 +1,7 @@
 /// Policy enforcement and capability filtering
-use crate::types::{Capability, CapabilityLevel, DeterminismMode, Policy, ResourceLimits, TenantId};
+use crate::types::{
+    Capability, CapabilityLevel, DeterminismMode, Policy, ResourceLimits, TenantId,
+};
 use std::collections::HashSet;
 
 /// Policy enforcement errors
@@ -55,9 +57,9 @@ impl Default for HostPolicy {
             .cloned()
             .collect(),
             max_limits: ResourceLimits {
-                cpu_ms: Some(60_000),    // 60 seconds
+                cpu_ms: Some(60_000),                  // 60 seconds
                 memory_bytes: Some(512 * 1024 * 1024), // 512 MB
-                io_ops: Some(10_000),    // 10k operations
+                io_ops: Some(10_000),                  // 10k operations
             },
             determinism_mode: DeterminismMode::Relaxed,
             tenant_isolation_enabled: true,
@@ -128,7 +130,10 @@ impl PolicyEnforcer {
     }
 
     /// Enforce resource limits (plan hints must not exceed host maximums)
-    pub fn enforce_limits(&self, plan_limits: &ResourceLimits) -> Result<ResourceLimits, PolicyError> {
+    pub fn enforce_limits(
+        &self,
+        plan_limits: &ResourceLimits,
+    ) -> Result<ResourceLimits, PolicyError> {
         let mut enforced = plan_limits.clone();
 
         // CPU limit
@@ -306,7 +311,7 @@ mod tests {
     fn test_resource_limit_enforcement() {
         let enforcer = PolicyEnforcer::with_defaults();
         let limits = ResourceLimits {
-            cpu_ms: Some(100_000), // Exceeds max
+            cpu_ms: Some(100_000),                 // Exceeds max
             memory_bytes: Some(128 * 1024 * 1024), // Within max
             io_ops: None,
         };

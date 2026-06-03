@@ -1,0 +1,7 @@
+# Pin the toolchain so the fmt and clippy gates are deterministic across
+# local dev and CI. Nightly is required for the rustfmt formatting the
+# repo is written against. Bump deliberately (and re-run `cargo fmt`) when
+# adopting a newer nightly.
+[toolchain]
+channel = "nightly-2026-04-16"
+components = ["rustfmt", "clippy"]

@@ -21,11 +21,11 @@ pub struct SystemLimits {
 impl Default for SystemLimits {
     fn default() -> Self {
         Self {
-            max_plan_size: 1024 * 1024,        // 1MB
-            max_components: 1000,               // 1000 components
-            max_bindings: 10_000,               // 10K bindings
-            max_graph_depth: 100,               // 100 levels deep
-            max_blob_size: 100 * 1024 * 1024,  // 100MB
+            max_plan_size: 1024 * 1024,           // 1MB
+            max_components: 1000,                 // 1000 components
+            max_bindings: 10_000,                 // 10K bindings
+            max_graph_depth: 100,                 // 100 levels deep
+            max_blob_size: 100 * 1024 * 1024,     // 100MB
             max_total_memory: 1024 * 1024 * 1024, // 1GB
         }
     }
@@ -48,7 +48,10 @@ impl SystemLimits {
         if count > self.max_components {
             return Err(Error::new(
                 ErrorCode::PlanInvalidSchema,
-                format!("Component count {} exceeds maximum {}", count, self.max_components),
+                format!(
+                    "Component count {} exceeds maximum {}",
+                    count, self.max_components
+                ),
             ));
         }
         Ok(())
@@ -59,7 +62,10 @@ impl SystemLimits {
         if count > self.max_bindings {
             return Err(Error::new(
                 ErrorCode::PlanInvalidSchema,
-                format!("Binding count {} exceeds maximum {}", count, self.max_bindings),
+                format!(
+                    "Binding count {} exceeds maximum {}",
+                    count, self.max_bindings
+                ),
             ));
         }
         Ok(())
@@ -70,7 +76,10 @@ impl SystemLimits {
         if depth > self.max_graph_depth {
             return Err(Error::new(
                 ErrorCode::PlanInvalidGraph,
-                format!("Graph depth {} exceeds maximum {}", depth, self.max_graph_depth),
+                format!(
+                    "Graph depth {} exceeds maximum {}",
+                    depth, self.max_graph_depth
+                ),
             ));
         }
         Ok(())

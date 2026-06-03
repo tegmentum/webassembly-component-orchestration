@@ -138,7 +138,12 @@ impl Pkcs11Signer {
             .env("KEYSTORE_PIN", &config.pin)
             .env("KEYSTORE_SO_PIN", &config.so_pin)
             .preopened_dir(&config_dir, "/config", DirPerms::READ, FilePerms::READ)?
-            .preopened_dir(&config.token_dir, "/data", DirPerms::all(), FilePerms::all())?;
+            .preopened_dir(
+                &config.token_dir,
+                "/data",
+                DirPerms::all(),
+                FilePerms::all(),
+            )?;
 
         let mut linker: Linker<KsState> = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)

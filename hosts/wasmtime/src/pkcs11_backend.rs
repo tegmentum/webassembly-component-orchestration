@@ -1,19 +1,14 @@
 /// PKCS#11 secret backend using WIT-based adapter
 /// Interfaces with hardware security modules and smart cards via the pkcs11-host-adapter
-use compose_core::secrets::{
-    SecretBackend, SecretError, SecretId, SecretMetadata,
-};
+use compose_core::secrets::{SecretBackend, SecretError, SecretId, SecretMetadata};
 
 #[cfg(feature = "pkcs11")]
 use pkcs11_host_adapter::{
-    AdapterContext,
     bindings::pkcs11::core::core::{
-        Attribute as WitAttribute,
-        AttributeValue,
-        ErrorCode as Pkcs11ErrorCode,
-        SessionFlags as WitSessionFlags,
-        UserType,
+        Attribute as WitAttribute, AttributeValue, ErrorCode as Pkcs11ErrorCode,
+        SessionFlags as WitSessionFlags, UserType,
     },
+    AdapterContext,
 };
 
 #[cfg(feature = "pkcs11")]
@@ -52,7 +47,9 @@ impl Pkcs11Backend {
             // Initialize the PKCS#11 module
             context
                 .ensure_initialized(&config.library_path)
-                .map_err(|e| SecretError::BackendError(format!("Failed to initialize PKCS#11: {:?}", e)))?;
+                .map_err(|e| {
+                    SecretError::BackendError(format!("Failed to initialize PKCS#11: {:?}", e))
+                })?;
 
             tracing::info!(
                 library = %config.library_path,
@@ -97,7 +94,8 @@ impl SecretBackend for Pkcs11Backend {
 
             // Open a read-only session
             let session_flags = WitSessionFlags::SERIAL_SESSION;
-            let session_handle = self.context
+            let session_handle = self
+                .context
                 .open_session(self.config.slot_id, session_flags)
                 .map_err(Self::map_pkcs11_error)?;
 
@@ -118,7 +116,8 @@ impl SecretBackend for Pkcs11Backend {
                 .find_objects_init(session_handle, &template)
                 .map_err(Self::map_pkcs11_error)?;
 
-            let objects = self.context
+            let objects = self
+                .context
                 .find_objects(session_handle, 1)
                 .map_err(Self::map_pkcs11_error)?;
 
@@ -133,7 +132,8 @@ impl SecretBackend for Pkcs11Backend {
 
             // Get the CKA_VALUE attribute from the first matching object
             let object_handle = objects[0];
-            let attributes = self.context
+            let attributes = self
+                .context
                 .get_attributes(session_handle, object_handle, &[CKA_VALUE])
                 .map_err(Self::map_pkcs11_error)?;
 
@@ -171,19 +171,19 @@ impl SecretBackend for Pkcs11Backend {
         #[cfg(feature = "pkcs11")]
         {
             // Get slot and token info to provide metadata
-            let slot_info = self.context
+            let slot_info = self
+                .context
                 .slot_info(self.config.slot_id)
                 .map_err(Self::map_pkcs11_error)?;
 
-            let token_info = self.context
+            let token_info = self
+                .context
                 .token_info(self.config.slot_id)
                 .map_err(Self::map_pkcs11_error)?;
 
             let metadata = format!(
                 "Slot: {} ({}), Token: {}",
-                self.config.slot_id,
-                &slot_info.slot_description,
-                &token_info.label
+                self.config.slot_id, &slot_info.slot_description, &token_info.label
             );
 
             Ok(SecretMetadata {
@@ -202,7 +202,10 @@ impl SecretBackend for Pkcs11Backend {
                 backend: format!("pkcs11://slot{}", self.config.slot_id),
                 created_at: None,
                 expires_at: None,
-                metadata: Some(format!("PKCS#11 slot {} (feature disabled)", self.config.slot_id)),
+                metadata: Some(format!(
+                    "PKCS#11 slot {} (feature disabled)",
+                    self.config.slot_id
+                )),
             })
         }
     }
@@ -222,7 +225,8 @@ impl SecretBackend for Pkcs11Backend {
 
             // Open a read-only session
             let session_flags = WitSessionFlags::SERIAL_SESSION;
-            let session_handle = self.context
+            let session_handle = self
+                .context
                 .open_session(self.config.slot_id, session_flags)
                 .map_err(Self::map_pkcs11_error)?;
 
@@ -243,7 +247,8 @@ impl SecretBackend for Pkcs11Backend {
 
             // Fetch objects in batches of 20
             loop {
-                let objects = self.context
+                let objects = self
+                    .context
                     .find_objects(session_handle, 20)
                     .map_err(Self::map_pkcs11_error)?;
 
@@ -253,8 +258,9 @@ impl SecretBackend for Pkcs11Backend {
 
                 // Get label attribute for each object
                 for object_handle in objects {
-                    if let Ok(attributes) = self.context
-                        .get_attributes(session_handle, object_handle, &[CKA_LABEL])
+                    if let Ok(attributes) =
+                        self.context
+                            .get_attributes(session_handle, object_handle, &[CKA_LABEL])
                     {
                         if let Some(attr) = attributes.first() {
                             if let AttributeValue::ByteString(bytes) = &attr.value {
@@ -309,7 +315,8 @@ mod tests {
         {
             // Only test if SoftHSM is actually installed
             if std::path::Path::new("/usr/lib/softhsm/libsofthsm2.so").exists()
-                || std::path::Path::new("/opt/homebrew/lib/softhsm/libsofthsm2.so").exists() {
+                || std::path::Path::new("/opt/homebrew/lib/softhsm/libsofthsm2.so").exists()
+            {
                 let backend = Pkcs11Backend::new(config);
                 // May succeed or fail depending on SoftHSM configuration
                 if let Ok(backend) = backend {
@@ -344,7 +351,8 @@ mod tests {
         {
             // Only test if SoftHSM is actually installed
             if std::path::Path::new("/usr/lib/softhsm/libsofthsm2.so").exists()
-                || std::path::Path::new("/opt/homebrew/lib/softhsm/libsofthsm2.so").exists() {
+                || std::path::Path::new("/opt/homebrew/lib/softhsm/libsofthsm2.so").exists()
+            {
                 if let Ok(backend) = Pkcs11Backend::new(config) {
                     assert_eq!(backend.scheme(), "pkcs11");
                 }

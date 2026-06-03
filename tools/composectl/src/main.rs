@@ -58,7 +58,7 @@ fn handle_plan(host: &CompositorHost, action: PlanAction, format: &OutputFormat)
     }
 }
 
-fn handle_emit(host: &CompositorHost, action: EmitAction, format: &OutputFormat) -> Result<()> {
+fn handle_emit(host: &CompositorHost, action: EmitAction, _format: &OutputFormat) -> Result<()> {
     match action {
         EmitAction::Build { plan, output } => {
             let plan_data = read_plan(&plan)?;
@@ -86,7 +86,7 @@ fn handle_emit(host: &CompositorHost, action: EmitAction, format: &OutputFormat)
     }
 }
 
-fn handle_exec(host: &CompositorHost, action: ExecAction, format: &OutputFormat) -> Result<()> {
+fn handle_exec(host: &CompositorHost, action: ExecAction, _format: &OutputFormat) -> Result<()> {
     match action {
         ExecAction::Run { plan, args } => {
             let plan_data = read_plan(&plan)?;
@@ -103,7 +103,7 @@ fn handle_exec(host: &CompositorHost, action: ExecAction, format: &OutputFormat)
             Ok(())
         }
         ExecAction::Invoke { plan, export } => {
-            let plan_data = read_plan(&plan)?;
+            let _plan_data = read_plan(&plan)?;
 
             println!("Invoking export '{}' from plan", export);
             println!("(Full invoke implementation requires WIT interface introspection)");
@@ -113,13 +113,16 @@ fn handle_exec(host: &CompositorHost, action: ExecAction, format: &OutputFormat)
 }
 
 fn handle_secrets(
-    host: &CompositorHost,
+    _host: &CompositorHost,
     action: SecretsAction,
-    format: &OutputFormat,
+    _format: &OutputFormat,
 ) -> Result<()> {
     match action {
         SecretsAction::List { backend } => {
-            println!("Listing secrets from backend: {:?}", backend.unwrap_or_else(|| "default".to_string()));
+            println!(
+                "Listing secrets from backend: {:?}",
+                backend.unwrap_or_else(|| "default".to_string())
+            );
             println!("(Secrets are managed via secret bindings in plans)");
             Ok(())
         }
@@ -131,7 +134,7 @@ fn handle_secrets(
     }
 }
 
-fn handle_trust(host: &CompositorHost, action: TrustAction, format: &OutputFormat) -> Result<()> {
+fn handle_trust(_host: &CompositorHost, action: TrustAction, _format: &OutputFormat) -> Result<()> {
     match action {
         TrustAction::Verify {
             artifact,
@@ -153,19 +156,19 @@ fn handle_trust(host: &CompositorHost, action: TrustAction, format: &OutputForma
 }
 
 fn handle_reflect(
-    host: &CompositorHost,
+    _host: &CompositorHost,
     action: ReflectAction,
-    format: &OutputFormat,
+    _format: &OutputFormat,
 ) -> Result<()> {
     match action {
         ReflectAction::Exports { plan } => {
-            let plan_data = read_plan(&plan)?;
+            let _plan_data = read_plan(&plan)?;
             println!("Exports from plan:");
             println!("(Requires WIT interface introspection)");
             Ok(())
         }
         ReflectAction::Describe { plan, export } => {
-            let plan_data = read_plan(&plan)?;
+            let _plan_data = read_plan(&plan)?;
             println!("Describing export '{}' from plan", export);
             println!("(Requires WIT interface introspection)");
             Ok(())
@@ -179,7 +182,7 @@ fn handle_metrics(
     format: &OutputFormat,
 ) -> Result<()> {
     match action {
-        MetricsAction::List { filter, since } => {
+        MetricsAction::List { filter, since: _ } => {
             // List all metrics, filtering handled separately if needed
             let metrics = host.metrics.list(filter.as_deref(), None, None);
 
@@ -190,7 +193,10 @@ fn handle_metrics(
                 OutputFormat::Text => {
                     println!("Collected Metrics:");
                     for metric in &metrics {
-                        println!("  {} = {:?} @ {}", metric.name, metric.value, metric.timestamp);
+                        println!(
+                            "  {} = {:?} @ {}",
+                            metric.name, metric.value, metric.timestamp
+                        );
                     }
                     println!("\nTotal: {} metrics", metrics.len());
                 }
@@ -232,8 +238,8 @@ fn handle_blob(host: &CompositorHost, action: BlobAction, format: &OutputFormat)
     match action {
         BlobAction::Put { file } => {
             // Read file
-            let bytes = fs::read(&file)
-                .with_context(|| format!("Failed to read file {:?}", file))?;
+            let bytes =
+                fs::read(&file).with_context(|| format!("Failed to read file {:?}", file))?;
 
             // Store in blob store
             let digest = host.blobs.put(&bytes)?;
@@ -246,8 +252,8 @@ fn handle_blob(host: &CompositorHost, action: BlobAction, format: &OutputFormat)
         }
         BlobAction::Get { digest, output } => {
             // Parse hex digest
-            let digest_bytes = hex::decode(&digest)
-                .with_context(|| format!("Invalid hex digest: {}", digest))?;
+            let digest_bytes =
+                hex::decode(&digest).with_context(|| format!("Invalid hex digest: {}", digest))?;
 
             // Get blob
             let bytes = host.blobs.get(&digest_bytes)?;
@@ -263,8 +269,8 @@ fn handle_blob(host: &CompositorHost, action: BlobAction, format: &OutputFormat)
         }
         BlobAction::Has { digest } => {
             // Parse hex digest
-            let digest_bytes = hex::decode(&digest)
-                .with_context(|| format!("Invalid hex digest: {}", digest))?;
+            let digest_bytes =
+                hex::decode(&digest).with_context(|| format!("Invalid hex digest: {}", digest))?;
 
             // Check existence
             let exists = host.blobs.has(&digest_bytes);
@@ -278,7 +284,7 @@ fn handle_blob(host: &CompositorHost, action: BlobAction, format: &OutputFormat)
 
             match format {
                 OutputFormat::Json => {
-                    let hex_digests: Vec<String> = blobs.iter().map(|d| hex::encode(d)).collect();
+                    let hex_digests: Vec<String> = blobs.iter().map(hex::encode).collect();
                     println!("{}", serde_json::to_string_pretty(&hex_digests)?);
                 }
                 OutputFormat::Text => {
@@ -290,7 +296,7 @@ fn handle_blob(host: &CompositorHost, action: BlobAction, format: &OutputFormat)
                     println!("\nTotal: {} blobs", blobs.len());
                 }
                 OutputFormat::Toml => {
-                    let hex_digests: Vec<String> = blobs.iter().map(|d| hex::encode(d)).collect();
+                    let hex_digests: Vec<String> = blobs.iter().map(hex::encode).collect();
                     println!("{}", toml::to_string_pretty(&hex_digests)?);
                 }
             }
@@ -300,8 +306,8 @@ fn handle_blob(host: &CompositorHost, action: BlobAction, format: &OutputFormat)
 }
 
 fn read_plan(path: &PathBuf) -> Result<compose_host_wasmtime::types::PlanV1> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read plan from {:?}", path))?;
+    let content =
+        fs::read_to_string(path).with_context(|| format!("Failed to read plan from {:?}", path))?;
 
     // Try JSON first
     match serde_json::from_str(&content) {

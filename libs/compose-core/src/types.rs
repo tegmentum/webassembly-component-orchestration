@@ -149,6 +149,28 @@ pub enum DeterminismMode {
     Relaxed,
 }
 
+/// How a plan's component imports are linked.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Linkage {
+    /// Imports are merged into one sealed artifact at emit time
+    /// (`wasm-compose`). This is the default and the historical behavior.
+    #[default]
+    Static,
+    /// Imports are bound at exec time through the `compose:dynlink`
+    /// host bridge (late binding). Requires non-Strict determinism.
+    Runtime,
+}
+
+impl Linkage {
+    /// Used by `serde(skip_serializing_if)` so the default (`Static`) is
+    /// omitted from a plan's canonical encoding — keeping the digests of
+    /// every pre-existing static plan byte-identical.
+    pub fn is_static(&self) -> bool {
+        matches!(self, Linkage::Static)
+    }
+}
+
 /// Policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -205,6 +227,10 @@ pub struct PlanV1 {
     pub bindings: Vec<ImportBinding>,
     pub secrets: Vec<SecretBinding>,
     pub policy: Policy,
+    /// Linking strategy. Omitted from the canonical encoding when
+    /// `Static` (the default), so static plans keep their existing digests.
+    #[serde(default, skip_serializing_if = "Linkage::is_static")]
+    pub linkage: Linkage,
 }
 
 /// Composition result

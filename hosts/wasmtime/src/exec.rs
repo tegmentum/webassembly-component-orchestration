@@ -8,6 +8,7 @@ use compose_core::policy::PolicyEnforcer;
 use compose_core::types::{
     Digest, Error, ErrorCode, ExecResult, ExportInfo, HttpRequest, HttpResponse, PlanV1,
 };
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use wasmtime::{
     component::{Component, Linker},
@@ -16,6 +17,23 @@ use wasmtime::{
 use wasmtime_wasi::p2::bindings::sync::Command;
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+/// Fold the set of providers linked at runtime into an exec-key hasher.
+///
+/// No-op when empty, so static-composition exec-keys are unchanged from
+/// before runtime linking existed. The `BTreeSet` is iterated in sorted
+/// order for determinism, and a domain separator guards against collision
+/// with the static portion of the key.
+fn fold_resolved_providers(hasher: &mut sha2::Sha256, resolved: &BTreeSet<Digest>) {
+    use sha2::Digest as _;
+    if resolved.is_empty() {
+        return;
+    }
+    hasher.update(b"dynlink-resolved:v1");
+    for digest in resolved {
+        hasher.update(digest);
+    }
+}
 
 /// Host state for WASI execution
 struct HostState {
@@ -42,6 +60,7 @@ pub struct ExecHandler {
     policy_enforcer: PolicyEnforcer,
     audit_logger: AuditLogger,
     metrics: MetricsCollector,
+    trust: compose_core::trust::TrustStore,
 }
 
 impl ExecHandler {
@@ -56,6 +75,7 @@ impl ExecHandler {
         policy_enforcer: PolicyEnforcer,
         audit_logger: AuditLogger,
         metrics: MetricsCollector,
+        trust: compose_core::trust::TrustStore,
     ) -> Self {
         Self {
             engine,
@@ -66,6 +86,7 @@ impl ExecHandler {
             policy_enforcer,
             audit_logger,
             metrics,
+            trust,
         }
     }
 
@@ -76,6 +97,13 @@ impl ExecHandler {
         _args: Vec<String>,
         _env: Vec<(String, String)>,
     ) -> Result<ExecResult, Error> {
+        // Runtime-linked plans (flavor A) take a separate path: the root
+        // consumer's endpoint import is bound to a provider at exec time
+        // rather than statically composed.
+        if plan.linkage == compose_core::types::Linkage::Runtime {
+            return self.run_cli_runtime_linked(plan, _args, _env);
+        }
+
         let start_time = std::time::Instant::now();
 
         self.events
@@ -107,8 +135,12 @@ impl ExecHandler {
         // Compose the plan first
         let composition = self.emit.compose(plan)?;
 
-        // Compute exec key
-        let exec_key = self.compute_exec_key(plan, &composition.digest)?;
+        // Compute exec key. The static composition path resolves no
+        // providers at runtime, so the resolved set is empty here and the
+        // key is identical to the pre-dynlink computation. The runtime-
+        // linking exec path (flavor A) passes the plan's bound provider
+        // digests instead.
+        let exec_key = self.compute_exec_key(plan, &composition.digest, &BTreeSet::new())?;
         let plan_digest = self.compute_plan_digest(plan)?;
 
         // Check cache
@@ -200,6 +232,162 @@ impl ExecHandler {
         } else {
             self.metrics.counter("exec.failure", 1, labels);
         }
+
+        Ok(result)
+    }
+
+    /// Execute a runtime-linked plan (flavor A): run the root consumer as
+    /// a CLI command with its single `compose:dynlink/endpoint` import
+    /// bound to a provider resolved at exec time. The provider is trust-
+    /// gated and its digest is folded into the exec-key so the cache only
+    /// hits when the same provider is linked.
+    fn run_cli_runtime_linked(
+        &self,
+        plan: &PlanV1,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<ExecResult, Error> {
+        let start_time = std::time::Instant::now();
+        self.events
+            .info("executing runtime-linked plan as CLI", None);
+
+        let enforced_policy = self
+            .policy_enforcer
+            .enforce_policy(&plan.policy)
+            .map_err(|e| {
+                Error::new(
+                    ErrorCode::PolicyViolation,
+                    format!("policy enforcement failed: {}", e),
+                )
+            })?;
+
+        // Capability gate: runtime linking requires both dynlink verbs to be
+        // granted (declared by the plan and permitted by the host).
+        if !enforced_policy.has_capability(crate::dynlink::CAP_RESOLVE)
+            || !enforced_policy.has_capability(crate::dynlink::CAP_INVOKE)
+        {
+            return Err(Error::new(
+                ErrorCode::ExecCapabilityDenied,
+                format!(
+                    "runtime linking requires the '{}' and '{}' capabilities",
+                    crate::dynlink::CAP_RESOLVE,
+                    crate::dynlink::CAP_INVOKE
+                ),
+            ));
+        }
+
+        // Locate the root consumer and the single endpoint binding.
+        let consumer_digest = plan
+            .components
+            .iter()
+            .find(|c| c.id == plan.root)
+            .map(|c| c.digest.clone())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::PlanInvalidGraph,
+                    "root component not found in plan",
+                )
+            })?;
+
+        let binding = match plan.bindings.as_slice() {
+            [b] => b,
+            [] => {
+                return Err(Error::new(
+                    ErrorCode::PlanInvalidGraph,
+                    "runtime linkage requires exactly one endpoint binding",
+                ))
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorCode::NotImplemented,
+                    "runtime linkage with multiple bindings is not yet supported",
+                ))
+            }
+        };
+
+        let provider_digest = plan
+            .components
+            .iter()
+            .find(|c| c.id == binding.provider_id)
+            .map(|c| c.digest.clone())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::PlanInvalidGraph,
+                    format!("provider '{}' not found in plan", binding.provider_id),
+                )
+            })?;
+
+        // Trust-gate the provider before it is loaded or instantiated.
+        self.trust
+            .verify_digest(&provider_digest)
+            .map_err(|e| Error::new(ErrorCode::TrustUntrustedSource, e.to_string()))?;
+
+        let consumer_bytes = self.blobs.get(&consumer_digest)?;
+        let provider_bytes = self.blobs.get(&provider_digest)?;
+
+        // Fold the resolved provider into the exec-key; the consumer digest
+        // stands in for the (non-existent) composed artifact.
+        let mut resolved = BTreeSet::new();
+        resolved.insert(provider_digest.clone());
+        let exec_key = self.compute_exec_key(plan, &consumer_digest, &resolved)?;
+        let plan_digest = self.compute_plan_digest(plan)?;
+
+        if let Some(cached) = self.check_cache(&exec_key) {
+            self.events
+                .info("execution cache hit (runtime-linked)", None);
+            let _ = self.audit_logger.log_exec(
+                &plan_digest,
+                &exec_key,
+                enforced_policy.tenant_id(),
+                "success (cached, runtime-linked)",
+                Some(cached.exit_code),
+            );
+            return Ok(cached);
+        }
+
+        let out = crate::dynlink::run_cli_with_endpoint(
+            &self.engine,
+            &consumer_bytes,
+            &provider_bytes,
+            &args,
+            &env,
+        )?;
+
+        let result = ExecResult {
+            exit_code: out.exit_code,
+            stdout: out.stdout,
+            stderr: out.stderr,
+            exec_key: exec_key.clone(),
+        };
+
+        self.update_cache(&exec_key, &result)?;
+        // Audit the run, recording the resolved provider so the dynamic
+        // linking decision is captured in the tamper-evident log.
+        let _ = self.audit_logger.log_exec(
+            &plan_digest,
+            &exec_key,
+            enforced_policy.tenant_id(),
+            &format!(
+                "success (runtime-linked, provider={})",
+                hex::encode(&provider_digest)
+            ),
+            Some(result.exit_code),
+        );
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let labels = vec![
+            MetricLabel {
+                key: "operation".to_string(),
+                value: "exec.runtime_linked".to_string(),
+            },
+            MetricLabel {
+                key: "tenant".to_string(),
+                value: enforced_policy.tenant_id().unwrap_or("default").to_string(),
+            },
+        ];
+        self.metrics
+            .timer("exec.duration_ms", duration_ms, labels.clone());
+        self.metrics.counter("exec.total", 1, labels);
 
         Ok(result)
     }
@@ -447,8 +635,18 @@ impl ExecHandler {
     }
 
     /// Compute exec key for caching with tenant isolation
-    /// exec_key = H(plan + digests + "exec:v1" + host_abi + caps + policy + tenant + limits + features)
-    fn compute_exec_key(&self, plan: &PlanV1, artifact_digest: &Digest) -> Result<Digest, Error> {
+    /// exec_key = H(plan + digests + "exec:v1" + host_abi + caps + policy + tenant + limits + features + resolved)
+    ///
+    /// `resolved_providers` is the set of provider digests linked at
+    /// runtime. It is empty for static composition (keeping those keys
+    /// stable) and non-empty for runtime linking, where folding it in
+    /// ensures a cache hit only when the exact same providers are linked.
+    fn compute_exec_key(
+        &self,
+        plan: &PlanV1,
+        artifact_digest: &Digest,
+        resolved_providers: &BTreeSet<Digest>,
+    ) -> Result<Digest, Error> {
         use sha2::{Digest as Sha2Digest, Sha256};
 
         let plan_validator = compose_core::plan::PlanValidator::new(self.blobs.clone());
@@ -481,6 +679,9 @@ impl ExecHandler {
         if let Some(io_ops) = plan.policy.limits.io_ops {
             hasher.update(io_ops.to_le_bytes());
         }
+
+        // Providers linked at runtime (empty for static composition).
+        fold_resolved_providers(&mut hasher, resolved_providers);
 
         Ok(hasher.finalize().to_vec())
     }
@@ -552,5 +753,45 @@ impl ExecHandler {
             .join("exec")
             .join(&hex_key[..2])
             .join(&hex_key[2..])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest as _, Sha256};
+
+    fn hash_with(resolved: &BTreeSet<Digest>) -> Digest {
+        let mut h = Sha256::new();
+        h.update(b"base");
+        fold_resolved_providers(&mut h, resolved);
+        h.finalize().to_vec()
+    }
+
+    #[test]
+    fn empty_resolved_set_does_not_change_key() {
+        // Static composition (empty set) must hash identically to not
+        // folding at all, so existing exec-keys stay stable.
+        let mut baseline = Sha256::new();
+        baseline.update(b"base");
+        assert_eq!(hash_with(&BTreeSet::new()), baseline.finalize().to_vec());
+    }
+
+    #[test]
+    fn resolved_providers_change_the_key() {
+        let empty = hash_with(&BTreeSet::new());
+        let one: BTreeSet<Digest> = [vec![1u8; 32]].into_iter().collect();
+        let two: BTreeSet<Digest> = [vec![1u8; 32], vec![2u8; 32]].into_iter().collect();
+
+        assert_ne!(hash_with(&one), empty);
+        assert_ne!(hash_with(&two), hash_with(&one));
+    }
+
+    #[test]
+    fn resolved_set_order_is_deterministic() {
+        // BTreeSet ordering means insertion order can't affect the key.
+        let a: BTreeSet<Digest> = [vec![1u8; 32], vec![2u8; 32]].into_iter().collect();
+        let b: BTreeSet<Digest> = [vec![2u8; 32], vec![1u8; 32]].into_iter().collect();
+        assert_eq!(hash_with(&a), hash_with(&b));
     }
 }

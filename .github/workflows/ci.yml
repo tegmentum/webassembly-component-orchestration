@@ -40,6 +40,15 @@ jobs:
       - name: cargo clippy
         if: steps.cargo.outputs.found == 'true'
         run: cargo clippy --all-targets --all-features -- -D warnings
+      # Build the runtime-linking example components so the dynlink and
+      # runtime_linking tests actually execute (they skip gracefully when
+      # the wasm32-wasip2 artifacts are absent). These examples depend only
+      # on wit-bindgen, so no private-dependency token is needed.
+      - name: Build dynlink example components
+        if: steps.cargo.outputs.found == 'true'
+        run: |
+          (cd examples/dynlink-echo-provider && cargo build --release --target wasm32-wasip2)
+          (cd examples/dynlink-endpoint-consumer && cargo build --release --target wasm32-wasip2)
       - name: cargo test
         if: steps.cargo.outputs.found == 'true'
         run: cargo test --all

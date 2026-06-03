@@ -6,6 +6,7 @@
 //! glue — engine setup, component instantiation via `exec` — plus the
 //! pkcs11 secret backend, which depends on the wasmtime-backed adapter.
 pub mod compose_host;
+pub mod dynlink;
 pub mod exec;
 #[cfg(feature = "pkcs11")]
 pub mod pkcs11_backend;
@@ -77,6 +78,8 @@ pub struct CompositorHost {
     pub metrics: MetricsCollector,
     pub attestation: AttestationService,
     pub clock: SharedClock,
+    /// Trust store gating which component digests may be linked at runtime.
+    pub trust: compose_core::trust::TrustStore,
 }
 
 impl CompositorHost {
@@ -102,6 +105,7 @@ impl CompositorHost {
 
         let events = EventCollector::new(clock.clone());
         let secrets = SecretManager::new(clock.clone());
+        let trust = compose_core::trust::TrustStore::new(config.trust_dir.clone(), clock.clone())?;
 
         // Register dev backend by default with some test secrets
         let dev_backend = compose_core::secrets::dev::DevBackend::new(clock.clone());
@@ -158,6 +162,7 @@ impl CompositorHost {
             metrics,
             attestation,
             clock,
+            trust,
         })
     }
 
@@ -183,6 +188,7 @@ impl CompositorHost {
             self.policy_enforcer.clone(),
             self.audit_logger.clone(),
             self.metrics.clone(),
+            self.trust.clone(),
         )
     }
 }

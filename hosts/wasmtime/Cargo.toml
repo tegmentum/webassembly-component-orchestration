@@ -11,8 +11,8 @@ publish = false
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-wasmtime = { version = "44.0.1", features = ["component-model"] }
-wasmtime-wasi = "44.0.1"
+wasmtime = { version = "45.0.0", features = ["component-model"] }
+wasmtime-wasi = "45.0.0"
 wat = "1"
 
 # Portable orchestrator core (no wasmtime dependency)

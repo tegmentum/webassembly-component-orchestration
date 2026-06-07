@@ -57,6 +57,13 @@ cd "$SCRIPT_DIR/dynlink-dlopen-guest"
 ./build.sh
 echo "  ✓ dynlink-dlopen-guest built"
 
+# Build hello-component (plain WASI CLI for the runner capability)
+echo ""
+echo "Building hello-component..."
+cd "$SCRIPT_DIR/hello-component"
+./build.sh
+echo "  ✓ hello-component built"
+
 echo ""
 echo "All examples built successfully!"
 echo ""

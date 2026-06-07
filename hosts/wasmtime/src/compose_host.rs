@@ -12,11 +12,12 @@
 //! `compose:host` surface, and have its exports called — exactly
 //! the way a future wasm-orchestrator would dispatch user requests.
 //!
-//! Today only the smoke path is wired: the orchestrator's
-//! `compose:host/smoke.host-name` export is called, which in turn
-//! invokes our `runtime-info.get-fingerprint` import. `runner` and
-//! `invoker` are stubbed pending the real orchestrator content
-//! that will use them.
+//! The smoke path is wired (the orchestrator's
+//! `compose:host/smoke.host-name` export calls our
+//! `runtime-info.get-fingerprint` import), and both `runner` (run a WASI
+//! CLI component with limits + captured stdio) and `invoker` (instantiate
+//! a component and call its exports, lifecycle + `call-with-cbor`) are
+//! implemented on the shared `crate::dynlink` instantiation base.
 use anyhow::Result;
 use std::path::Path;
 use wasmtime::component::{Component, Linker, ResourceTable};
@@ -104,20 +105,61 @@ impl RuntimeInfoHost for HostState {
     }
 }
 
+/// Map a WIT `limits` record to the dynlink `SandboxLimits` (shared by the
+/// runner and invoker capabilities). `cpu_ms` becomes a fuel budget via an
+/// approximate instruction-per-ms factor; `timeout_ms` becomes an epoch
+/// deadline rounded up to whole ticks.
+fn sandbox_limits_from(limits: &Limits) -> crate::dynlink::SandboxLimits {
+    const FUEL_PER_MS: u64 = 1_000_000;
+    let tick_ms = (crate::dynlink::EPOCH_TICK.as_millis() as u64).max(1);
+    crate::dynlink::SandboxLimits {
+        memory_bytes: limits.memory_bytes,
+        fuel: limits.cpu_ms.map(|ms| ms.saturating_mul(FUEL_PER_MS)),
+        epoch_ticks: limits
+            .timeout_ms
+            .map(|ms| (ms.saturating_add(tick_ms - 1) / tick_ms).max(1)),
+    }
+}
+
+/// Map a portable `compose_core` error to a `compose:host` `exec-error`.
+fn exec_error_from_core(e: compose_core::types::Error) -> ExecError {
+    use compose_core::types::ErrorCode as C;
+    match e.code {
+        C::InvalidInput => ExecError::InvalidComponent(e.message),
+        C::ExecResourceExhausted => ExecError::LimitExceeded(e.message),
+        C::ExecTimeout => ExecError::TimedOut,
+        C::ExecTrap => ExecError::Trap(e.message),
+        _ => ExecError::HostError(e.message),
+    }
+}
+
 impl RunnerHost for HostState {
     fn run_cli(
         &mut self,
-        _component_bytes: Vec<u8>,
-        _args: Vec<String>,
-        _env: Vec<(String, String)>,
-        _stdin: Vec<u8>,
-        _limits: Limits,
+        component_bytes: Vec<u8>,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+        stdin: Vec<u8>,
+        limits: Limits,
     ) -> Result<ExecResult, ExecError> {
-        // Pending the wiring through to the existing exec.rs machinery.
-        // The orchestrator smoke POC does not exercise this path.
-        Err(ExecError::HostError(
-            "runner.run-cli not yet implemented".to_string(),
-        ))
+        // Run the component as a sandboxed WASI CLI command with limits and
+        // captured stdio. `stdio_buffer_bytes` bounds the captured output.
+        let stdio_cap = limits.stdio_buffer_bytes.unwrap_or(64 * 1024) as usize;
+        let sandbox = sandbox_limits_from(&limits);
+        let out = crate::dynlink::run_cli_command(
+            &component_bytes,
+            &args,
+            &env,
+            &stdin,
+            sandbox,
+            stdio_cap,
+        )
+        .map_err(exec_error_from_core)?;
+        Ok(ExecResult {
+            exit_code: out.exit_code,
+            stdout: out.stdout,
+            stderr: out.stderr,
+        })
     }
 }
 
@@ -136,23 +178,10 @@ impl InvokerHost for HostState {
         limits: Limits,
     ) -> Result<wasmtime::component::Resource<compose::host::invoker::Instance>, ExecError> {
         // Sandbox the instance in the shared fuel + epoch engine so memory,
-        // CPU, and wall-clock caps can be enforced. `memory_bytes` caps
-        // linear memory (StoreLimits); `cpu_ms` becomes a fuel budget via an
-        // approximate instruction-per-ms factor; `timeout_ms` becomes an
-        // epoch deadline (wall-clock). `stdio_buffer_bytes` does not apply
-        // to function invocation (no stdio is captured).
-        const FUEL_PER_MS: u64 = 1_000_000;
-        let tick_ms = crate::dynlink::EPOCH_TICK.as_millis() as u64;
+        // CPU, and wall-clock caps can be enforced. (`stdio_buffer_bytes`
+        // does not apply to function invocation — no stdio is captured.)
         let engine = crate::dynlink::sandbox_engine();
-        let sandbox_limits = crate::dynlink::SandboxLimits {
-            memory_bytes: limits.memory_bytes,
-            fuel: limits.cpu_ms.map(|ms| ms.saturating_mul(FUEL_PER_MS)),
-            // Round the timeout up to whole ticks (at least one).
-            epoch_ticks: limits
-                .timeout_ms
-                .map(|ms| ms.saturating_add(tick_ms - 1) / tick_ms.max(1))
-                .map(|ticks| ticks.max(1)),
-        };
+        let sandbox_limits = sandbox_limits_from(&limits);
         let owned = crate::dynlink::instantiate_owned(&engine, &component_bytes, sandbox_limits)
             .map_err(|e| ExecError::InvalidComponent(e.message))?;
         let backing = self
@@ -504,6 +533,13 @@ mod invoker_tests {
         .ok()
     }
 
+    fn hello_component() -> Option<Vec<u8>> {
+        std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../examples/hello-component/target/wasm32-wasip2/release/hello-component.wasm",
+        ))
+        .ok()
+    }
+
     fn host_state() -> HostState {
         HostState {
             wasi_ctx: WasiCtxBuilder::new().build(),
@@ -717,5 +753,54 @@ mod invoker_tests {
         let err = InvokerHost::instantiate(&mut state, vec![0, 1, 2, 3], no_limits())
             .expect_err("garbage must fail");
         assert!(matches!(err, ExecError::InvalidComponent(_)));
+    }
+
+    /// runner.run-cli runs a plain WASI CLI component with args and captured
+    /// stdio (no longer a stub).
+    #[test]
+    fn runner_runs_plain_cli() {
+        let Some(bytes) = hello_component() else {
+            eprintln!("skipping: build examples/hello-component");
+            return;
+        };
+        let mut state = host_state();
+        let result = RunnerHost::run_cli(
+            &mut state,
+            bytes,
+            vec!["hello-component".to_string(), "world".to_string()],
+            vec![],
+            vec![],
+            no_limits(),
+        )
+        .expect("run-cli");
+        assert_eq!(result.exit_code, 0);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("hello from runner"), "stdout: {stdout}");
+        assert!(stdout.contains("arg: world"), "stdout: {stdout}");
+    }
+
+    /// runner.run-cli enforces the wall-clock timeout on a runaway guest.
+    #[test]
+    fn runner_enforces_timeout() {
+        let Some(bytes) = hello_component() else {
+            return;
+        };
+        let mut state = host_state();
+        let limits = Limits {
+            cpu_ms: None,
+            memory_bytes: None,
+            timeout_ms: Some(50),
+            stdio_buffer_bytes: None,
+        };
+        let err = RunnerHost::run_cli(
+            &mut state,
+            bytes,
+            vec!["hello-component".to_string(), "spin".to_string()],
+            vec![],
+            vec![],
+            limits,
+        )
+        .expect_err("spin must be interrupted");
+        assert!(matches!(err, ExecError::TimedOut), "got {err:?}");
     }
 }

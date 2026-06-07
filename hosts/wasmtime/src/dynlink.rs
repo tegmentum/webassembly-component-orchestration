@@ -14,9 +14,11 @@
 //! `&mut DynState` and never the guest's store: instantiating and
 //! calling a provider touches only the provider's own store.
 //!
-//! Status: Phase 2 — resolve + invoke by digest (flavor B). Policy
-//! gating and dedicated audit logging are consolidated in Phase 5;
-//! resolve-by-id and the exec-key/determinism wiring are Phase 3.
+//! This module also provides the shared instantiation primitives used by
+//! the `compose:host` capabilities: `instantiate_owned` / `OwnedInstance`
+//! (invoker), `run_cli_with_endpoint` (flavor A), `run_cli_dlopen`
+//! (flavor B), and `run_cli_command` (runner) — all running in isolated,
+//! limit-enforced stores on the shared fuel + epoch `sandbox_engine`.
 use compose_core::blobs::BlobStore;
 use compose_core::trust::TrustStore;
 use compose_core::types::DeterminismMode;
@@ -882,6 +884,93 @@ pub fn run_cli_dlopen(
         },
         resolved,
     ))
+}
+
+/// Run a plain WASI CLI component (`wasi:cli/run`) with resource limits and
+/// captured stdio. This backs the `compose:host/runner` capability: the
+/// component imports only WASI (no `compose:dynlink` surface). Uses the
+/// shared fuel + epoch sandbox engine so `limits` are enforced; fuel
+/// exhaustion → `ExecResourceExhausted`, epoch deadline → `ExecTimeout`.
+/// `stdio_cap` bounds the captured stdout/stderr buffers.
+pub fn run_cli_command(
+    bytes: &[u8],
+    args: &[String],
+    env: &[(String, String)],
+    stdin: &[u8],
+    limits: SandboxLimits,
+    stdio_cap: usize,
+) -> Result<RuntimeLinkOutput, compose_core::types::Error> {
+    use compose_core::types::ErrorCode as CoreErrorCode;
+    let engine = sandbox_engine();
+    let component = Component::new(&engine, bytes).map_err(|e| {
+        core_error(
+            CoreErrorCode::InvalidInput,
+            format!("invalid component: {e:?}"),
+        )
+    })?;
+
+    let mut linker = Linker::<ProviderState>::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| {
+        core_error(
+            CoreErrorCode::InternalError,
+            format!("failed to add WASI: {e:?}"),
+        )
+    })?;
+
+    let mut limits_builder = wasmtime::StoreLimitsBuilder::new();
+    if let Some(max) = limits.memory_bytes {
+        limits_builder = limits_builder.memory_size(max as usize);
+    }
+    let stdout = MemoryOutputPipe::new(stdio_cap);
+    let stderr = MemoryOutputPipe::new(stdio_cap);
+    let mut builder = WasiCtxBuilder::new();
+    builder.args(args);
+    for (k, v) in env {
+        builder.env(k, v);
+    }
+    builder
+        .stdin(MemoryInputPipe::new(stdin.to_vec()))
+        .stdout(stdout.clone())
+        .stderr(stderr.clone());
+
+    let mut store = Store::new(
+        &engine,
+        ProviderState {
+            wasi_ctx: builder.build(),
+            wasi_table: ResourceTable::new(),
+            limits: limits_builder.build(),
+        },
+    );
+    store.limiter(|s| &mut s.limits);
+    let _ = store.set_fuel(limits.fuel.unwrap_or(u64::MAX));
+    store.set_epoch_deadline(limits.epoch_ticks.unwrap_or(u64::MAX / 2));
+    store.epoch_deadline_trap();
+
+    let command = Command::instantiate(&mut store, &component, &linker).map_err(|e| {
+        core_error(
+            CoreErrorCode::ExecTrap,
+            format!("failed to instantiate command: {e:?}"),
+        )
+    })?;
+    let exit_code = match command.wasi_cli_run().call_run(&mut store) {
+        Ok(Ok(())) => 0u32,
+        Ok(Err(())) => 1u32,
+        Err(e) => {
+            let code = match e.downcast_ref::<wasmtime::Trap>() {
+                Some(wasmtime::Trap::OutOfFuel) => CoreErrorCode::ExecResourceExhausted,
+                Some(wasmtime::Trap::Interrupt) => CoreErrorCode::ExecTimeout,
+                _ => CoreErrorCode::ExecTrap,
+            };
+            return Err(core_error(code, format!("command run failed: {e:?}")));
+        }
+    };
+
+    drop(store);
+    Ok(RuntimeLinkOutput {
+        exit_code,
+        stdout: stdout.contents().to_vec(),
+        stderr: stderr.contents().to_vec(),
+    })
 }
 
 #[cfg(test)]

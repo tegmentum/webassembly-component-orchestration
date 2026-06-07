@@ -1,0 +1,13 @@
+[package]
+name = "hello-component"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "hello-component"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "s"
+strip = true

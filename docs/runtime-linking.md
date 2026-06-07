@@ -500,6 +500,21 @@ host API:
 `linkage:runtime` plan through `CompositorHost`/`run_cli`; the guest dlopens
 the (trusted) echo provider and prints the transformed output.
 
+### Phase 8 — `compose:host/runner` on the shared base ✅
+
+The last `compose:host` stub is implemented: `runner.run-cli` runs a plain
+WASI CLI component (`wasi:cli/run`) with args/env/stdin and captured stdio,
+under the same `SandboxLimits` as invoker (memory via `StoreLimits`, CPU via
+fuel, wall-clock via epoch — and here `stdio_buffer_bytes` *does* apply,
+bounding the captured output). Fuel exhaustion → `limit-exceeded`, epoch
+deadline → `timed-out`. Backed by `dynlink::run_cli_command`. With this,
+**both** `compose:host` capabilities (`runner` + `invoker`) run on the shared
+`crate::dynlink` instantiation base — no stubs remain.
+
+**Example**: `examples/hello-component/` (a plain WASI CLI, with a `spin`
+arg for limit tests). **Tests**: `runner_runs_plain_cli`,
+`runner_enforces_timeout`.
+
 ## Resources
 
 - [COMPOSITION_INTEGRATION.md](../COMPOSITION_INTEGRATION.md) — the static model

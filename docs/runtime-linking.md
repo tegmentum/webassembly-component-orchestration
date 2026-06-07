@@ -259,6 +259,31 @@ path:
 - **No host-side type checking.** The schema contract lives in the CBOR envelope
   and the guests' agreement on it.
 
+### Non-goal: cross-instance resource passing
+
+Passing component-model **resources** (handles) between a consumer and a
+runtime-linked provider is a deliberate **non-goal**, not a pending feature:
+
+- **The wire format precludes it.** Both runtime-linking flavors move *opaque
+  bytes* (the `endpoint` `handle(method, list<u8>) -> list<u8>` contract) or
+  CBOR (`invoker.call-with-cbor`). A resource is a live handle into one
+  instance's table, not a value — it has no byte/CBOR representation, so
+  `crate::cbor_val` rejects `own`/`borrow` (and resource `Val`s) explicitly.
+- **Handles are nominal and instance-scoped.** Even with a typed boundary, a
+  resource type defined in one instance does not type-match "the same" resource
+  in another; `wasm-compose` only unifies them because it merges the components
+  into one instance graph. Across separate stores (which is the whole point of
+  the per-provider isolation here) there is no shared type identity.
+- **What it would take.** A genuinely different *typed linking mode* (the
+  approach explicitly rejected in favor of the uniform endpoint), plus a host
+  resource-translation table mapping provider-handle ↔ host `Resource<T>` ↔
+  consumer-handle per resource type, with ownership/borrow tracking across the
+  boundary. That is a large subsystem with no current use case.
+- **The supported pattern.** Exchange *values* (bytes/CBOR); if a provider owns
+  a stateful resource, keep it inside the provider and address it by an
+  application-level id in the message payload (the secret-token indirection
+  pattern), rather than handing the raw handle across the boundary.
+
 ## Comparison with static composition
 
 | Aspect | Static composition | Runtime linking (this doc) |

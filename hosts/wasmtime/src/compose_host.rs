@@ -158,9 +158,9 @@ impl HostInstance for HostState {
     ) -> Option<u32> {
         let owned = self.invoker_table.get(&invoker_backing(&self_)).ok()?;
         owned
-            .exports
+            .funcs
             .iter()
-            .position(|n| n == &name)
+            .position(|f| f.name == name)
             .map(|i| i as u32)
     }
 
@@ -170,26 +170,48 @@ impl HostInstance for HostState {
     ) -> Vec<String> {
         self.invoker_table
             .get(&invoker_backing(&self_))
-            .map(|owned| owned.exports.clone())
+            .map(|owned| owned.funcs.iter().map(|f| f.name.clone()).collect())
             .unwrap_or_default()
     }
 
     fn call_with_cbor(
         &mut self,
-        _self_: wasmtime::component::Resource<compose::host::invoker::Instance>,
-        _export_id: u32,
-        _args_cbor: Vec<u8>,
+        self_: wasmtime::component::Resource<compose::host::invoker::Instance>,
+        export_id: u32,
+        args_cbor: Vec<u8>,
     ) -> Result<Vec<u8>, ExecError> {
-        // Structured invocation requires type-directed CBOR<->Val
-        // marshalling over each export's signature. The component model
-        // can't yet express polymorphic value passing through WIT
-        // directly (see invoker.wit), so this remains deferred — but it is
-        // now backed by a real, live instance rather than a stub.
-        Err(ExecError::HostError(
-            "call-with-cbor (structured invocation) is not yet implemented: \
-             typed CBOR<->Val marshalling is deferred"
-                .to_string(),
-        ))
+        // Structured invocation: decode the CBOR argument array against the
+        // export's parameter types, call it, and re-encode the results as
+        // CBOR. See crate::cbor_val for the wire conventions.
+        let owned = self
+            .invoker_table
+            .get_mut(&invoker_backing(&self_))
+            .map_err(|e| ExecError::HostError(format!("unknown instance handle: {e:?}")))?;
+
+        let func_meta = owned
+            .funcs
+            .get(export_id as usize)
+            .ok_or_else(|| ExecError::HostError(format!("no export with id {export_id}")))?;
+        let index = func_meta.index;
+        let params = func_meta.params.clone();
+        let result_count = func_meta.results.len();
+
+        let args = crate::cbor_val::decode_params(&args_cbor, &params)
+            .map_err(|e| ExecError::HostError(format!("decoding args: {e}")))?;
+
+        let func = owned
+            .instance
+            .get_func(&mut owned.store, index)
+            .ok_or_else(|| ExecError::HostError("export is not a function".to_string()))?;
+
+        let mut results = vec![wasmtime::component::Val::Bool(false); result_count];
+        func.call(&mut owned.store, &args, &mut results)
+            .map_err(|e| ExecError::Trap(format!("{e:?}")))?;
+        // wasmtime 45: post_return is a no-op and deprecated, so it is not
+        // called here.
+
+        crate::cbor_val::encode_results(&results)
+            .map_err(|e| ExecError::HostError(format!("encoding results: {e}")))
     }
 
     fn drop(
@@ -501,12 +523,12 @@ mod invoker_tests {
 
         let handle = InvokerHost::instantiate(&mut state, bytes, no_limits()).expect("instantiate");
 
+        // The echo provider exports `compose:dynlink/endpoint`'s `handle`;
+        // it surfaces as a callable `iface#func` entry.
         let exports = HostInstance::list_exports(&mut state, handle_to(&handle));
         assert!(
-            exports
-                .iter()
-                .any(|e| e.contains("compose:dynlink/endpoint")),
-            "expected endpoint export, got {exports:?}"
+            exports.iter().any(|e| e.ends_with("#handle")),
+            "expected a #handle export, got {exports:?}"
         );
 
         let known = exports[0].clone();
@@ -515,10 +537,59 @@ mod invoker_tests {
             HostInstance::get_export(&mut state, handle_to(&handle), "nope".to_string()).is_none()
         );
 
-        // Structured invocation remains deferred, but against a live instance.
-        let err = HostInstance::call_with_cbor(&mut state, handle_to(&handle), 0, vec![])
-            .expect_err("call-with-cbor deferred");
-        assert!(matches!(err, ExecError::HostError(_)));
+        HostInstance::drop(&mut state, handle).expect("drop");
+    }
+
+    /// call-with-cbor: structured invocation of the echo provider's
+    /// `handle(method, payload) -> result<list<u8>, error>` through the
+    /// CBOR marshalling layer.
+    #[test]
+    fn invoker_call_with_cbor_round_trips() {
+        use ciborium::value::Value as Cbor;
+
+        let Some(bytes) = echo_provider() else {
+            return;
+        };
+        let mut cfg = wasmtime::Config::new();
+        cfg.wasm_component_model(true);
+        let engine = Engine::new(&cfg).unwrap();
+        let mut state = host_state(&engine);
+        let handle = InvokerHost::instantiate(&mut state, bytes, no_limits()).expect("instantiate");
+
+        let exports = HostInstance::list_exports(&mut state, handle_to(&handle));
+        let handle_fn = exports
+            .iter()
+            .find(|n| n.ends_with("#handle"))
+            .expect("handle export")
+            .clone();
+        let id = HostInstance::get_export(&mut state, handle_to(&handle), handle_fn).unwrap();
+
+        // args: ("upper", b"hi") — string + list<u8> (as a CBOR byte string).
+        let args = Cbor::Array(vec![
+            Cbor::Text("upper".into()),
+            Cbor::Bytes(b"hi".to_vec()),
+        ]);
+        let mut args_cbor = Vec::new();
+        ciborium::into_writer(&args, &mut args_cbor).unwrap();
+
+        let out = HostInstance::call_with_cbor(&mut state, handle_to(&handle), id, args_cbor)
+            .expect("call-with-cbor");
+
+        // result: [ {"ok": b"HI"} ]  (result<list<u8>, error> = Ok(...))
+        let decoded: Cbor = ciborium::from_reader(&out[..]).expect("result is CBOR");
+        let Cbor::Array(items) = decoded else {
+            panic!("expected array, got {decoded:?}")
+        };
+        assert_eq!(items.len(), 1, "one result value");
+        let Cbor::Map(entries) = &items[0] else {
+            panic!("expected result map")
+        };
+        let (k, v) = &entries[0];
+        assert!(matches!(k, Cbor::Text(s) if s == "ok"), "expected ok arm");
+        match v {
+            Cbor::Bytes(b) => assert_eq!(b, b"HI"),
+            other => panic!("expected uppercased bytes, got {other:?}"),
+        }
 
         HostInstance::drop(&mut state, handle).expect("drop");
     }

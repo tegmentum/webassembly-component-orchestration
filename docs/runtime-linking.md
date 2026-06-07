@@ -29,11 +29,10 @@ trust/policy/audit gating, and is scoped as a host→orchestrator capability.
 
 `compose:dynlink` is the **general mechanism**: digest/id resolution, trust +
 policy + audit gating, and the uniform opaque-byte `endpoint` calling
-convention. As of Phase 6, `invoker`'s instance **lifecycle** (instantiate /
-list-exports / get-export / drop) is re-implemented on the shared dynlink
-instantiation base (`dynlink::instantiate_owned` / `OwnedInstance`), so there is
-one runtime-instantiation path. Its typed `call-with-cbor` remains deferred —
-see Phase 6 below.
+convention. As of Phase 6, `invoker` is fully re-implemented on the shared
+dynlink instantiation base (`dynlink::instantiate_owned` / `OwnedInstance`), so
+there is one runtime-instantiation path — including typed `call-with-cbor`
+structured invocation (`crate::cbor_val`). See Phase 6 below.
 
 Two flavors are in scope:
 
@@ -416,25 +415,32 @@ that entrypoint exists — `DynState` is currently exercised via the host API an
 tests, not a live guest-execution command. Flavor A (the wired exec path) is
 audited.
 
-### Phase 6 — Reimplement `compose:host/invoker` on the dynlink base ✅ (partial)
+### Phase 6 — Reimplement `compose:host/invoker` on the dynlink base ✅
 
 - **Shared base**: `dynlink::instantiate_owned` instantiates *any* component
   in a fresh WASI store and returns an `OwnedInstance` (raw `Instance` + its
-  own `Store` + top-level export names). This is the single runtime-
-  instantiation primitive.
-- **invoker lifecycle** (`compose_host.rs`): `instantiate`, `list-exports`,
-  `get-export`, and `drop` are now real implementations over `OwnedInstance`
-  (handles bridged by `Resource::new_own(rep)`), replacing the previous stubs.
-  Malformed bytes surface as `invalid-component`.
-- **Deferred**: `call-with-cbor` (structured, typed invocation) still returns a
-  clear "not yet implemented" error — but now against a live instance. It needs
-  type-directed CBOR↔`Val` marshalling over each export's signature, which the
-  component model can't yet express polymorphically through WIT; `invoker.wit`
-  itself marks this provisional. `limits` are accepted but not yet enforced
-  (epoch/memory limiting is future work).
+  own `Store` + the enumerated callable functions). This is the single
+  runtime-instantiation primitive.
+- **Function enumeration**: `enumerate_callables` walks top-level exported
+  functions and the functions of each top-level exported interface (one level
+  deep, named `iface#func`), recording each function's `ComponentExportIndex`
+  and component-model parameter/result `Type`s.
+- **invoker** (`compose_host.rs`): `instantiate`, `list-exports`, `get-export`,
+  and `drop` are real implementations over `OwnedInstance` (handles bridged by
+  `Resource::new_own(rep)`); malformed bytes surface as `invalid-component`.
+- **`call-with-cbor` (now implemented)**: `crate::cbor_val` performs
+  type-directed CBOR↔`Val` marshalling — decode the CBOR argument array against
+  the export's parameter types, call the function, re-encode the result `Val`s
+  as CBOR. Wire conventions: scalars→CBOR scalars; `list<u8>`→byte string
+  (other lists→array); `record`→keyed map; `tuple`→array; `option`→inner-or-null;
+  `result`→`{ok|err: v}`; `variant`→`{case: payload}`; `enum`→text; `flags`→array;
+  `map`→map. Resources/futures/streams error (not representable).
+- **Still deferred**: `limits` enforcement (epoch/memory limiting).
 
-**Tests**: `invoker_lifecycle_runs_on_dynlink_base` (instantiate the echo
-provider, list/get its exports, drop) and `invoker_rejects_invalid_component`.
+**Tests**: `invoker_lifecycle_runs_on_dynlink_base`,
+`invoker_rejects_invalid_component`, `invoker_call_with_cbor_round_trips`
+(calls the echo provider's `handle(string, list<u8>) -> result<list<u8>, error>`
+end to end), plus six `cbor_val` unit tests for the marshalling.
 
 ## Resources
 

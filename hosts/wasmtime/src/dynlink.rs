@@ -445,9 +445,61 @@ pub struct OwnedInstance {
     pub store: Store<ProviderState>,
     /// The instantiated component, with imports satisfied by WASI only.
     pub instance: wasmtime::component::Instance,
-    /// Top-level export names (interfaces and bare functions), in the
-    /// component's declaration order.
-    pub exports: Vec<String>,
+    /// Every callable exported function, including those nested one level
+    /// inside an exported interface (named `iface#func`). This is what the
+    /// `invoker` capability enumerates and calls.
+    pub funcs: Vec<CallableFunc>,
+}
+
+/// A single callable exported function plus the metadata needed to invoke
+/// it: its export index and component-model parameter/result types.
+pub struct CallableFunc {
+    pub name: String,
+    pub index: wasmtime::component::ComponentExportIndex,
+    pub params: Vec<wasmtime::component::Type>,
+    pub results: Vec<wasmtime::component::Type>,
+}
+
+/// Enumerate callable functions: top-level exported functions plus the
+/// functions of each top-level exported interface (one level deep).
+fn enumerate_callables(
+    store: &mut Store<ProviderState>,
+    instance: &wasmtime::component::Instance,
+    top_names: &[String],
+    engine: &Engine,
+) -> Vec<CallableFunc> {
+    use wasmtime::component::types::ComponentItem;
+    let mut funcs = Vec::new();
+    for top in top_names {
+        let Some((item, idx)) = instance.get_export(&mut *store, None, top) else {
+            continue;
+        };
+        match item {
+            ComponentItem::ComponentFunc(cf) => funcs.push(CallableFunc {
+                name: top.clone(),
+                index: idx,
+                params: cf.params().map(|(_, t)| t).collect(),
+                results: cf.results().collect(),
+            }),
+            ComponentItem::ComponentInstance(ci) => {
+                let subs: Vec<String> = ci.exports(engine).map(|(n, _)| n.to_string()).collect();
+                for sub in subs {
+                    if let Some((ComponentItem::ComponentFunc(cf), fidx)) =
+                        instance.get_export(&mut *store, Some(&idx), &sub)
+                    {
+                        funcs.push(CallableFunc {
+                            name: format!("{top}#{sub}"),
+                            index: fidx,
+                            params: cf.params().map(|(_, t)| t).collect(),
+                            results: cf.results().collect(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    funcs
 }
 
 /// Instantiate any component in a fresh WASI-only store and return the raw
@@ -489,10 +541,11 @@ pub fn instantiate_owned(
             format!("failed to instantiate: {e:?}"),
         )
     })?;
+    let funcs = enumerate_callables(&mut store, &instance, &exports, engine);
     Ok(OwnedInstance {
         store,
         instance,
-        exports,
+        funcs,
     })
 }
 

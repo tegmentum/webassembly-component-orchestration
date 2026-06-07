@@ -1,0 +1,7 @@
+# Default config for nektos/act (local GitHub Actions runner).
+# Used to run CI locally while the org's hosted Actions are unavailable.
+# Medium image that ships rustup + common runner tooling.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+# Host is Apple Silicon; run the container natively for speed. Drop this
+# (or set linux/amd64) if you need exact parity with GitHub's amd64 runners.
+--container-architecture linux/arm64

@@ -50,6 +50,13 @@ cd "$SCRIPT_DIR/dynlink-endpoint-consumer"
 ./build.sh
 echo "  ✓ dynlink-endpoint-consumer built"
 
+# Build dynlink-dlopen-guest (flavor B guest-driven demo)
+echo ""
+echo "Building dynlink-dlopen-guest..."
+cd "$SCRIPT_DIR/dynlink-dlopen-guest"
+./build.sh
+echo "  ✓ dynlink-dlopen-guest built"
+
 echo ""
 echo "All examples built successfully!"
 echo ""

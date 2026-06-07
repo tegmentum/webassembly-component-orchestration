@@ -37,6 +37,18 @@ pub const CAP_INVOKE: &str = "dynlink:invoke";
 /// validate that runtime-linked components actually speak `endpoint`.
 pub const ENDPOINT_INTERFACE: &str = "compose:dynlink/endpoint";
 
+/// The runtime-linking `linker` interface name (version-agnostic prefix).
+/// A root component importing this drives flavor B (guest-driven dlopen).
+pub const LINKER_INTERFACE: &str = "compose:dynlink/linker";
+
+/// Whether a compiled component imports the `linker` interface (flavor B).
+pub fn imports_linker(engine: &Engine, component: &Component) -> bool {
+    component
+        .component_type()
+        .imports(engine)
+        .any(|(name, _)| name.starts_with(LINKER_INTERFACE))
+}
+
 /// Whether a compiled component exports the `endpoint` interface.
 fn exports_endpoint(engine: &Engine, component: &Component) -> bool {
     component
@@ -778,6 +790,98 @@ pub fn run_cli_with_endpoint(
         stdout: stdout.contents().to_vec(),
         stderr: stderr.contents().to_vec(),
     })
+}
+
+/// Run a CLI guest that drives runtime linking itself (flavor B): the
+/// guest imports `compose:dynlink/linker` and resolves providers on demand
+/// by id/digest. `registry` maps component ids to digests (from the plan);
+/// the host's `blobs`/`trust` back resolution, gated by `granted` caps and
+/// `determinism`. Returns the run output plus the set of provider digests
+/// the guest actually resolved (for the audit record).
+#[allow(clippy::too_many_arguments)]
+pub fn run_cli_dlopen(
+    engine: &Engine,
+    guest_bytes: &[u8],
+    registry: &[(String, Vec<u8>)],
+    blobs: BlobStore,
+    trust: TrustStore,
+    determinism: DeterminismMode,
+    granted: BTreeSet<String>,
+    args: &[String],
+    env: &[(String, String)],
+) -> Result<(RuntimeLinkOutput, BTreeSet<Vec<u8>>), compose_core::types::Error> {
+    use compose_core::types::ErrorCode as CoreErrorCode;
+
+    let component = Component::new(engine, guest_bytes).map_err(|e| {
+        core_error(
+            CoreErrorCode::EmitLinkError,
+            format!("failed to load guest component: {e:?}"),
+        )
+    })?;
+    if !imports_linker(engine, &component) {
+        return Err(core_error(
+            CoreErrorCode::PlanInvalidGraph,
+            format!("guest does not import {LINKER_INTERFACE}"),
+        ));
+    }
+
+    let mut linker = Linker::<DynState>::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| {
+        core_error(
+            CoreErrorCode::InternalError,
+            format!("failed to add WASI to guest linker: {e:?}"),
+        )
+    })?;
+    add_to_linker(&mut linker)
+        .map_err(|e| core_error(CoreErrorCode::EmitLinkError, format!("{e:?}")))?;
+
+    let mut state = DynState::new(engine.clone(), blobs, trust, determinism, granted)
+        .map_err(|e| core_error(CoreErrorCode::InternalError, format!("{e:?}")))?;
+    for (id, digest) in registry {
+        state.register_id(id.clone(), digest.clone());
+    }
+
+    // Configure the guest's WASI context (args/env + captured stdio),
+    // replacing the default one DynState::new builds.
+    let stdout = MemoryOutputPipe::new(64 * 1024);
+    let stderr = MemoryOutputPipe::new(64 * 1024);
+    let mut builder = WasiCtxBuilder::new();
+    builder.args(args);
+    for (k, v) in env {
+        builder.env(k, v);
+    }
+    builder
+        .stdin(MemoryInputPipe::new(Vec::new()))
+        .stdout(stdout.clone())
+        .stderr(stderr.clone());
+    state.wasi_ctx = builder.build();
+
+    let mut store = Store::new(engine, state);
+    let command = Command::instantiate(&mut store, &component, &linker).map_err(|e| {
+        core_error(
+            CoreErrorCode::ExecTrap,
+            format!("failed to instantiate guest command: {e:?}"),
+        )
+    })?;
+    let exit_code = match command
+        .wasi_cli_run()
+        .call_run(&mut store)
+        .map_err(|e| core_error(CoreErrorCode::ExecTrap, format!("guest run trapped: {e:?}")))?
+    {
+        Ok(()) => 0u32,
+        Err(()) => 1u32,
+    };
+
+    let resolved = store.data().resolved_providers().clone();
+    drop(store);
+    Ok((
+        RuntimeLinkOutput {
+            exit_code,
+            stdout: stdout.contents().to_vec(),
+            stderr: stderr.contents().to_vec(),
+        },
+        resolved,
+    ))
 }
 
 #[cfg(test)]

@@ -341,15 +341,10 @@ confirms the trust gate; `linker_registration_type_checks` covers registration.
 The integration test drives the host trait methods directly (standing in for a
 guest that imports `linker`) and skips gracefully if the provider isn't built.
 
-**Deferred to later phases (not yet wired):**
-
-- **Policy gating** (`dynlink:resolve` / `dynlink:invoke`) and **dedicated audit
-  logging** — consolidated in Phase 5. Phase 2 gates on trust only.
-- **`TrustStore` in `CompositorHost`** — still not constructed in
-  `hosts/wasmtime/src/lib.rs`; the test builds its own. A live exec entrypoint
-  that instantiates a guest importing `linker` (and therefore needs the host to
-  own a `TrustStore` + build a `DynState`) arrives with Phase 4's exec
-  integration. Until then runtime linking is exercised at the host-API level.
+**Wired in later phases** (historical note — these were deferred at Phase 2 and
+are now complete): policy gating + audit (Phase 5); `TrustStore` constructed in
+`CompositorHost` (Phase 4); and the live guest-driven exec entrypoint that runs
+a guest importing `linker` (Phase 7, below).
 
 ### Phase 3 — Resolve by id + determinism/exec-key ✅
 
@@ -444,10 +439,8 @@ portable `compose-core` `validate` has no wasm engine to introspect with.)
 invoke denied when only `resolve` is granted). Existing flavor-A e2e plans now
 declare the two capabilities.
 
-**Note**: dedicated audit for a *guest-driven* flavor-B exec path is moot until
-that entrypoint exists — `DynState` is currently exercised via the host API and
-tests, not a live guest-execution command. Flavor A (the wired exec path) is
-audited.
+**Note**: the guest-driven flavor-B exec path now exists (Phase 7) and audits
+the resolved-provider set; both flavors are audited.
 
 ### Phase 6 — Reimplement `compose:host/invoker` on the dynlink base ✅
 
@@ -482,6 +475,30 @@ audited.
 `invoker_rejects_invalid_component`, `invoker_call_with_cbor_round_trips`
 (calls the echo provider's `handle(string, list<u8>) -> result<list<u8>, error>`
 end to end), plus six `cbor_val` unit tests for the marshalling.
+
+### Phase 7 — Guest-driven flavor B through `run_cli` ✅
+
+Flavor B is now reachable through the normal execution path, not just the
+host API:
+
+- **Dispatch**: `ExecHandler::run_cli` (for `linkage:runtime`) compiles the
+  root and checks whether it imports `compose:dynlink/linker`
+  (`dynlink::imports_linker`). If so it runs the guest-driven path; otherwise
+  it falls back to flavor A's endpoint binding.
+- **`dynlink::run_cli_dlopen`**: builds a `DynState` wired to the host's
+  engine/blobs/trust, registers the plan's components as the `id -> digest`
+  registry, adds WASI + the `linker` import, and runs the guest as a
+  `wasi:cli/run` command. The guest resolves providers on demand
+  (`resolve-by-id`/`resolve-by-digest`), each trust- and capability-gated. The
+  resolved-digest set is recorded in the audit log. Flavor B is **not cached**
+  (the resolved set is only known after the run, so a pre-run cache lookup
+  isn't possible).
+- **Example**: `examples/dynlink-dlopen-guest/` — a CLI that imports `linker`,
+  resolves `provider` by id, calls `upper`, and prints the result.
+
+**Test**: `guest_driven_dlopen_runs_through_run_cli` runs a no-binding
+`linkage:runtime` plan through `CompositorHost`/`run_cli`; the guest dlopens
+the (trusted) echo provider and prints the transformed output.
 
 ## Resources
 

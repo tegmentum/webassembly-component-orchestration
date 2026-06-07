@@ -262,3 +262,80 @@ fn runtime_linked_plan_rejects_multiple_bindings() {
         .expect_err("multiple bindings must be rejected");
     assert_eq!(err.code, compose_host_wasmtime::ErrorCode::PlanInvalidGraph);
 }
+
+/// Flavor B end-to-end: a guest that imports `compose:dynlink/linker`
+/// dlopens a provider by id at run time (no plan binding). The plan's
+/// components form the id->digest registry; the provider is trust-gated.
+#[test]
+fn guest_driven_dlopen_runs_through_run_cli() {
+    let (Ok(guest), Ok(provider)) = (
+        std::fs::read(example("dynlink-dlopen-guest", "dynlink-dlopen-guest.wasm")),
+        std::fs::read(example(
+            "dynlink-echo-provider",
+            "dynlink_echo_provider.wasm",
+        )),
+    ) else {
+        eprintln!("skipping: build examples/dynlink-dlopen-guest and dynlink-echo-provider");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let config = HostConfig {
+        blob_dir: tmp.path().join("blobs"),
+        cache_dir: tmp.path().join("cache"),
+        trust_dir: tmp.path().join("trust"),
+        audit_dir: tmp.path().join("audit"),
+        max_blob_size: 64 * 1024 * 1024,
+        attest_pkcs11: None,
+    };
+    let host = CompositorHost::new(config).expect("host");
+    let guest_digest = host.blobs.put(&guest).expect("put guest");
+    let provider_digest = host.blobs.put(&provider).expect("put provider");
+    host.trust
+        .trust_digest(
+            &provider_digest,
+            VerificationMetadata {
+                signer: "test".to_string(),
+                timestamp: None,
+                backend: "dev".to_string(),
+            },
+        )
+        .expect("trust provider");
+
+    // No bindings: the guest resolves "provider" itself via the registry.
+    let plan = PlanV1 {
+        version: "1".to_string(),
+        root: "guest".to_string(),
+        components: vec![
+            ComponentSpec {
+                id: "guest".to_string(),
+                digest: guest_digest,
+                source: None,
+            },
+            ComponentSpec {
+                id: "provider".to_string(),
+                digest: provider_digest,
+                source: None,
+            },
+        ],
+        bindings: vec![],
+        secrets: vec![],
+        policy: runtime_policy(),
+        linkage: Linkage::Runtime,
+    };
+
+    let result = host
+        .exec_handler()
+        .run_cli(&plan, vec![], vec![])
+        .expect("guest-driven run");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout).trim(),
+        "HELLO FROM DLOPEN"
+    );
+}

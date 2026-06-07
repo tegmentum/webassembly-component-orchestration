@@ -276,7 +276,7 @@ impl ExecHandler {
             ));
         }
 
-        // Locate the root consumer and the single endpoint binding.
+        // Locate the root component.
         let consumer_digest = plan
             .components
             .iter()
@@ -288,6 +288,19 @@ impl ExecHandler {
                     "root component not found in plan",
                 )
             })?;
+
+        // Flavor B: if the root imports `compose:dynlink/linker`, it drives
+        // linking itself (dlopen by id/digest) rather than via a plan binding.
+        let root_bytes = self.blobs.get(&consumer_digest)?;
+        let root_component = Component::new(&self.engine, &root_bytes).map_err(|e| {
+            Error::new(
+                ErrorCode::InternalError,
+                format!("failed to load root component: {}", e),
+            )
+        })?;
+        if crate::dynlink::imports_linker(&self.engine, &root_component) {
+            return self.run_cli_dlopen(plan, &root_bytes, &enforced_policy, args, env);
+        }
 
         let binding = match plan.bindings.as_slice() {
             [b] => b,
@@ -384,6 +397,90 @@ impl ExecHandler {
             MetricLabel {
                 key: "operation".to_string(),
                 value: "exec.runtime_linked".to_string(),
+            },
+            MetricLabel {
+                key: "tenant".to_string(),
+                value: enforced_policy.tenant_id().unwrap_or("default").to_string(),
+            },
+        ];
+        self.metrics
+            .timer("exec.duration_ms", duration_ms, labels.clone());
+        self.metrics.counter("exec.total", 1, labels);
+
+        Ok(result)
+    }
+
+    /// Execute a guest-driven runtime-linked plan (flavor B): the root
+    /// component imports `compose:dynlink/linker` and resolves providers by
+    /// id/digest at run time. The plan's components form the id→digest
+    /// registry; the host's trust store and the plan's granted capabilities
+    /// gate each resolution. Not cached — the resolved set is only known
+    /// after the run — but it is recorded in the audit log.
+    fn run_cli_dlopen(
+        &self,
+        plan: &PlanV1,
+        root_bytes: &[u8],
+        enforced_policy: &compose_core::policy::EnforcedPolicy,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<ExecResult, Error> {
+        let start_time = std::time::Instant::now();
+        self.events
+            .info("executing runtime-linked plan (guest-driven)", None);
+
+        let registry: Vec<(String, Digest)> = plan
+            .components
+            .iter()
+            .map(|c| (c.id.clone(), c.digest.clone()))
+            .collect();
+        let granted: BTreeSet<String> = enforced_policy
+            .capabilities
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        let (out, resolved) = crate::dynlink::run_cli_dlopen(
+            &self.engine,
+            root_bytes,
+            &registry,
+            self.blobs.clone(),
+            self.trust.clone(),
+            plan.policy.determinism,
+            granted,
+            &args,
+            &env,
+        )?;
+
+        // The exec-key folds the providers the guest actually resolved (for
+        // traceability/audit). There is no composed artifact, so the
+        // artifact slot is empty.
+        let exec_key = self.compute_exec_key(plan, &Vec::new(), &resolved)?;
+        let plan_digest = self.compute_plan_digest(plan)?;
+        let resolved_hex = resolved
+            .iter()
+            .map(hex::encode)
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = self.audit_logger.log_exec(
+            &plan_digest,
+            &exec_key,
+            enforced_policy.tenant_id(),
+            &format!("success (runtime-linked, guest-driven, resolved=[{resolved_hex}])"),
+            Some(out.exit_code),
+        );
+
+        let result = ExecResult {
+            exit_code: out.exit_code,
+            stdout: out.stdout,
+            stderr: out.stderr,
+            exec_key,
+        };
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let labels = vec![
+            MetricLabel {
+                key: "operation".to_string(),
+                value: "exec.dlopen".to_string(),
             },
             MetricLabel {
                 key: "tenant".to_string(),

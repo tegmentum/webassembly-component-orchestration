@@ -60,6 +60,9 @@ mod consumer {
 pub struct ProviderState {
     wasi_ctx: WasiCtx,
     wasi_table: ResourceTable,
+    /// Memory/instance resource limits for this store (unlimited by
+    /// default; set for `invoker` instances per their `limits`).
+    limits: wasmtime::StoreLimits,
 }
 
 impl WasiView for ProviderState {
@@ -252,6 +255,7 @@ impl LinkerHost for DynState {
             ProviderState {
                 wasi_ctx: WasiCtxBuilder::new().build(),
                 wasi_table: ResourceTable::new(),
+                limits: wasmtime::StoreLimits::default(),
             },
         );
         let instance =
@@ -436,6 +440,31 @@ fn core_error(code: compose_core::types::ErrorCode, message: String) -> compose_
     compose_core::types::Error::new(code, message)
 }
 
+/// Resource limits applied to a sandboxed instance.
+#[derive(Default, Clone, Copy)]
+pub struct SandboxLimits {
+    /// Max linear-memory bytes the guest may allocate (denies growth past it).
+    pub memory_bytes: Option<u64>,
+    /// CPU budget expressed as wasmtime fuel units. `None` = unbounded.
+    /// Requires the engine to have been built with `consume_fuel`.
+    pub fuel: Option<u64>,
+}
+
+/// Build an engine suitable for sandboxed `invoker` instances: the
+/// component model plus fuel consumption (so a CPU/fuel budget can be
+/// enforced). Cheap to clone; kept alive by any `Store` created from it.
+pub fn sandbox_engine() -> Result<Engine, compose_core::types::Error> {
+    let mut config = wasmtime::Config::new();
+    config.wasm_component_model(true);
+    config.consume_fuel(true);
+    Engine::new(&config).map_err(|e| {
+        core_error(
+            compose_core::types::ErrorCode::InternalError,
+            format!("failed to build sandbox engine: {e:?}"),
+        )
+    })
+}
+
 /// A component instantiated in its own isolated WASI store, owned by the
 /// host. This is the shared base for both the dynlink endpoint path and
 /// the `compose:host/invoker` capability, so there is one runtime-
@@ -508,6 +537,7 @@ fn enumerate_callables(
 pub fn instantiate_owned(
     engine: &Engine,
     bytes: &[u8],
+    limits: SandboxLimits,
 ) -> Result<OwnedInstance, compose_core::types::Error> {
     use compose_core::types::ErrorCode as CoreErrorCode;
     let component = Component::new(engine, bytes).map_err(|e| {
@@ -528,13 +558,27 @@ pub fn instantiate_owned(
             format!("failed to add WASI: {e:?}"),
         )
     })?;
+
+    // Memory cap: StoreLimits denies growth beyond the limit (the guest
+    // sees memory.grow fail; no host trap).
+    let mut limits_builder = wasmtime::StoreLimitsBuilder::new();
+    if let Some(max) = limits.memory_bytes {
+        limits_builder = limits_builder.memory_size(max as usize);
+    }
     let mut store = Store::new(
         engine,
         ProviderState {
             wasi_ctx: WasiCtxBuilder::new().build(),
             wasi_table: ResourceTable::new(),
+            limits: limits_builder.build(),
         },
     );
+    store.limiter(|s| &mut s.limits);
+    // CPU cap via fuel. Best-effort: a no-op error when the engine wasn't
+    // built with `consume_fuel`. With fuel enabled the store starts at 0,
+    // so we must always set it (u64::MAX ~ unbounded when no limit).
+    let _ = store.set_fuel(limits.fuel.unwrap_or(u64::MAX));
+
     let instance = linker.instantiate(&mut store, &component).map_err(|e| {
         core_error(
             CoreErrorCode::ExecTrap,
@@ -573,6 +617,7 @@ fn instantiate_provider(
         ProviderState {
             wasi_ctx: WasiCtxBuilder::new().build(),
             wasi_table: ResourceTable::new(),
+            limits: wasmtime::StoreLimits::default(),
         },
     );
     let instance = provider::DynlinkProvider::instantiate(&mut store, &component, &linker)

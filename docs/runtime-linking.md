@@ -435,7 +435,13 @@ audited.
   (other lists→array); `record`→keyed map; `tuple`→array; `option`→inner-or-null;
   `result`→`{ok|err: v}`; `variant`→`{case: payload}`; `enum`→text; `flags`→array;
   `map`→map. Resources/futures/streams error (not representable).
-- **Still deferred**: `limits` enforcement (epoch/memory limiting).
+- **`limits` enforcement**: invoker instances run in a fuel-enabled sandbox
+  engine (`dynlink::sandbox_engine`). `memory_bytes` caps linear memory via
+  `StoreLimits` (denies growth past the cap); `cpu_ms` becomes a fuel budget
+  (approximate instruction-per-ms factor) and exhaustion surfaces as
+  `limit-exceeded`. **Still deferred**: `timeout_ms` (true wall-clock — needs
+  epoch interruption + a ticker thread) and `stdio_buffer_bytes` (not
+  applicable to function invocation, which captures no stdio).
 
 **Tests**: `invoker_lifecycle_runs_on_dynlink_base`,
 `invoker_rejects_invalid_component`, `invoker_call_with_cbor_round_trips`

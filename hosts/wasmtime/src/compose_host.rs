@@ -58,10 +58,9 @@ pub struct HostState {
     runtime_name: String,
     runtime_version: String,
     host_target: String,
-    /// Engine used to instantiate components for the `invoker` capability.
-    engine: Engine,
     /// Backing store for live `invoker` instances, handed out as opaque
     /// `instance` resource handles. Reuses the dynlink instantiation base.
+    /// (Each instance carries its own fuel-enabled sandbox engine.)
     invoker_table: ResourceTable,
 }
 
@@ -134,13 +133,22 @@ impl InvokerHost for HostState {
     fn instantiate(
         &mut self,
         component_bytes: Vec<u8>,
-        _limits: Limits,
+        limits: Limits,
     ) -> Result<wasmtime::component::Resource<compose::host::invoker::Instance>, ExecError> {
-        // Reuse the dynlink instantiation base: a fresh WASI store per
-        // instance. `limits` are accepted but not yet enforced (epoch /
-        // memory limiting is future work — see invoker.wit's provisional
-        // status).
-        let owned = crate::dynlink::instantiate_owned(&self.engine, &component_bytes)
+        // Sandbox the instance in its own fuel-enabled engine so memory and
+        // CPU caps can be enforced. `memory_bytes` caps linear memory
+        // (StoreLimits); `cpu_ms` becomes a fuel budget via an approximate
+        // instruction-per-ms factor. `timeout_ms` (true wall-clock) needs
+        // epoch interruption + a ticker and is not yet enforced;
+        // `stdio_buffer_bytes` does not apply to function invocation.
+        const FUEL_PER_MS: u64 = 1_000_000;
+        let engine =
+            crate::dynlink::sandbox_engine().map_err(|e| ExecError::HostError(e.message))?;
+        let sandbox_limits = crate::dynlink::SandboxLimits {
+            memory_bytes: limits.memory_bytes,
+            fuel: limits.cpu_ms.map(|ms| ms.saturating_mul(FUEL_PER_MS)),
+        };
+        let owned = crate::dynlink::instantiate_owned(&engine, &component_bytes, sandbox_limits)
             .map_err(|e| ExecError::InvalidComponent(e.message))?;
         let backing = self
             .invoker_table
@@ -206,7 +214,17 @@ impl HostInstance for HostState {
 
         let mut results = vec![wasmtime::component::Val::Bool(false); result_count];
         func.call(&mut owned.store, &args, &mut results)
-            .map_err(|e| ExecError::Trap(format!("{e:?}")))?;
+            .map_err(|e| {
+                // A fuel/CPU-budget exhaustion surfaces as an OutOfFuel trap.
+                if matches!(
+                    e.downcast_ref::<wasmtime::Trap>(),
+                    Some(wasmtime::Trap::OutOfFuel)
+                ) {
+                    ExecError::LimitExceeded("cpu/fuel budget exceeded".to_string())
+                } else {
+                    ExecError::Trap(format!("{e:?}"))
+                }
+            })?;
         // wasmtime 45: post_return is a no-op and deprecated, so it is not
         // called here.
 
@@ -271,7 +289,6 @@ pub fn instantiate_orchestrator(
         runtime_name: "wasmtime".to_string(),
         runtime_version: env!("CARGO_PKG_VERSION").to_string(),
         host_target: std::env::consts::ARCH.to_string() + "-" + std::env::consts::OS,
-        engine: engine.clone(),
         invoker_table: ResourceTable::new(),
     };
 
@@ -481,14 +498,13 @@ mod invoker_tests {
         .ok()
     }
 
-    fn host_state(engine: &Engine) -> HostState {
+    fn host_state() -> HostState {
         HostState {
             wasi_ctx: WasiCtxBuilder::new().build(),
             wasi_table: ResourceTable::new(),
             runtime_name: "test".to_string(),
             runtime_version: "0".to_string(),
             host_target: "test".to_string(),
-            engine: engine.clone(),
             invoker_table: ResourceTable::new(),
         }
     }
@@ -516,10 +532,7 @@ mod invoker_tests {
             eprintln!("skipping: build examples/dynlink-echo-provider");
             return;
         };
-        let mut cfg = wasmtime::Config::new();
-        cfg.wasm_component_model(true);
-        let engine = Engine::new(&cfg).unwrap();
-        let mut state = host_state(&engine);
+        let mut state = host_state();
 
         let handle = InvokerHost::instantiate(&mut state, bytes, no_limits()).expect("instantiate");
 
@@ -550,10 +563,7 @@ mod invoker_tests {
         let Some(bytes) = echo_provider() else {
             return;
         };
-        let mut cfg = wasmtime::Config::new();
-        cfg.wasm_component_model(true);
-        let engine = Engine::new(&cfg).unwrap();
-        let mut state = host_state(&engine);
+        let mut state = host_state();
         let handle = InvokerHost::instantiate(&mut state, bytes, no_limits()).expect("instantiate");
 
         let exports = HostInstance::list_exports(&mut state, handle_to(&handle));
@@ -594,13 +604,56 @@ mod invoker_tests {
         HostInstance::drop(&mut state, handle).expect("drop");
     }
 
+    /// Explicit memory + CPU limits are applied to the instance (a generous
+    /// budget still allows a normal call to succeed). This exercises the
+    /// StoreLimits + fuel plumbing without breaking valid execution.
+    #[test]
+    fn call_succeeds_under_generous_limits() {
+        use ciborium::value::Value as Cbor;
+
+        let Some(bytes) = echo_provider() else {
+            return;
+        };
+        let mut state = host_state();
+        let limits = Limits {
+            cpu_ms: Some(60_000),
+            memory_bytes: Some(256 * 1024 * 1024),
+            timeout_ms: None,
+            stdio_buffer_bytes: None,
+        };
+        let handle =
+            InvokerHost::instantiate(&mut state, bytes, limits).expect("instantiate under limits");
+
+        let exports = HostInstance::list_exports(&mut state, handle_to(&handle));
+        let f = exports
+            .iter()
+            .find(|n| n.ends_with("#handle"))
+            .expect("handle export")
+            .clone();
+        let id = HostInstance::get_export(&mut state, handle_to(&handle), f).unwrap();
+
+        let args = Cbor::Array(vec![Cbor::Text("echo".into()), Cbor::Bytes(b"ok".to_vec())]);
+        let mut args_cbor = Vec::new();
+        ciborium::into_writer(&args, &mut args_cbor).unwrap();
+
+        let out = HostInstance::call_with_cbor(&mut state, handle_to(&handle), id, args_cbor)
+            .expect("call under limits");
+        let decoded: Cbor = ciborium::from_reader(&out[..]).unwrap();
+        let Cbor::Array(items) = decoded else {
+            panic!("array")
+        };
+        let Cbor::Map(entries) = &items[0] else {
+            panic!("map")
+        };
+        assert!(matches!(&entries[0].0, Cbor::Text(s) if s == "ok"));
+
+        HostInstance::drop(&mut state, handle).expect("drop");
+    }
+
     /// Malformed component bytes surface as invalid-component, not a stub.
     #[test]
     fn invoker_rejects_invalid_component() {
-        let mut cfg = wasmtime::Config::new();
-        cfg.wasm_component_model(true);
-        let engine = Engine::new(&cfg).unwrap();
-        let mut state = host_state(&engine);
+        let mut state = host_state();
 
         let err = InvokerHost::instantiate(&mut state, vec![0, 1, 2, 3], no_limits())
             .expect_err("garbage must fail");

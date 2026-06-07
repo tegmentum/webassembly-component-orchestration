@@ -395,8 +395,12 @@ it (>1 binding is rejected at exec with a pointer to flavor B). Multiple
 providers are served by **flavor B**, where the guest resolves any number of
 them on demand via `compose:dynlink/linker`.
 
-**Deferred**: richer validation that both endpoints speak `endpoint` (needs
-component-type introspection, not available in portable `validate`).
+**Endpoint-shape validation**: at exec time the host introspects the component
+types (`Component::component_type().imports()/exports()`) and rejects a
+runtime-linked plan whose provider doesn't **export** `compose:dynlink/endpoint`
+or whose consumer doesn't **import** it — a clear `PlanInvalidGraph` error
+rather than a cryptic instantiation failure. (This lives host-side because the
+portable `compose-core` `validate` has no wasm engine to introspect with.)
 
 ### Phase 5 — Policy verbs, audit, and docs ✅
 

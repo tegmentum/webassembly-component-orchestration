@@ -33,6 +33,26 @@ pub const CAP_RESOLVE: &str = "dynlink:resolve";
 /// Capability a plan must be granted to invoke a resolved instance.
 pub const CAP_INVOKE: &str = "dynlink:invoke";
 
+/// The uniform endpoint interface name (version-agnostic prefix). Used to
+/// validate that runtime-linked components actually speak `endpoint`.
+pub const ENDPOINT_INTERFACE: &str = "compose:dynlink/endpoint";
+
+/// Whether a compiled component exports the `endpoint` interface.
+fn exports_endpoint(engine: &Engine, component: &Component) -> bool {
+    component
+        .component_type()
+        .exports(engine)
+        .any(|(name, _)| name.starts_with(ENDPOINT_INTERFACE))
+}
+
+/// Whether a compiled component imports the `endpoint` interface.
+fn imports_endpoint(engine: &Engine, component: &Component) -> bool {
+    component
+        .component_type()
+        .imports(engine)
+        .any(|(name, _)| name.starts_with(ENDPOINT_INTERFACE))
+}
+
 /// Typed bindings for instantiating and calling a *provider* component —
 /// one that exports `compose:dynlink/endpoint`. Kept in its own module
 /// so its generated `compose::dynlink` / `sys::compose` types don't
@@ -365,6 +385,7 @@ pub fn add_to_linker(linker: &mut Linker<DynState>) -> anyhow::Result<()> {
 }
 
 /// Result of running a consumer command with a runtime-linked endpoint.
+#[derive(Debug)]
 pub struct RuntimeLinkOutput {
     pub exit_code: u32,
     pub stdout: Vec<u8>,
@@ -639,6 +660,14 @@ fn instantiate_provider(
             format!("failed to load provider component: {e:?}"),
         )
     })?;
+    // Validate the shape up front so a misconfigured binding fails with a
+    // clear message instead of a cryptic instantiation error.
+    if !exports_endpoint(engine, &component) {
+        return Err(core_error(
+            CoreErrorCode::PlanInvalidGraph,
+            format!("provider does not export {ENDPOINT_INTERFACE}"),
+        ));
+    }
     let mut linker = Linker::<ProviderState>::new(engine);
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| {
         core_error(
@@ -685,6 +714,12 @@ pub fn run_cli_with_endpoint(
             format!("failed to load consumer component: {e:?}"),
         )
     })?;
+    if !imports_endpoint(engine, &consumer_component) {
+        return Err(core_error(
+            CoreErrorCode::PlanInvalidGraph,
+            format!("consumer does not import {ENDPOINT_INTERFACE}; the runtime binding has nothing to satisfy"),
+        ));
+    }
 
     let mut linker = Linker::<ConsumerState>::new(engine);
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| {
@@ -950,6 +985,42 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),
             "HELLO FROM CONSUMER"
+        );
+    }
+
+    /// Endpoint-shape validation: a provider that doesn't export
+    /// `endpoint`, and a consumer that doesn't import it, are both rejected
+    /// with a clear error rather than a cryptic instantiation failure.
+    /// (The consumer wasm exports no `endpoint`; the provider wasm imports
+    /// none — so swapping them exercises each check.)
+    #[test]
+    fn endpoint_shape_is_validated() {
+        let (Ok(provider), Ok(consumer)) = (
+            std::fs::read(echo_provider_path()),
+            std::fs::read(endpoint_consumer_path()),
+        ) else {
+            return;
+        };
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).unwrap();
+
+        // Provider slot given a component that doesn't export endpoint.
+        let err = run_cli_with_endpoint(&engine, &consumer, &consumer, &[], &[])
+            .expect_err("provider must export endpoint");
+        assert!(
+            err.message.contains("does not export"),
+            "got: {}",
+            err.message
+        );
+
+        // Consumer slot given a component that doesn't import endpoint.
+        let err = run_cli_with_endpoint(&engine, &provider, &provider, &[], &[])
+            .expect_err("consumer must import endpoint");
+        assert!(
+            err.message.contains("does not import"),
+            "got: {}",
+            err.message
         );
     }
 

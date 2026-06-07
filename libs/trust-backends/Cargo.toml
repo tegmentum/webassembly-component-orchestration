@@ -15,6 +15,10 @@ compose-core = { path = "../compose-core" }
 tracing = "0.1"
 hex = "0.4"
 pgp = "0.19.0"
+# Offline Sigstore bundle verification. default-features off: we never fetch
+# trust roots over the network (the production root is embedded), so we avoid
+# pulling TLS/TUF client code.
+sigstore-verify = { version = "0.8.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

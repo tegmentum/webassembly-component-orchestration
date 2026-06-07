@@ -68,6 +68,8 @@ fn runtime_linked_plan_runs_consumer_with_bound_provider() {
         max_blob_size: 64 * 1024 * 1024,
         attest_pkcs11: None,
         pgp_keyring: None,
+        sigstore_trust_root: None,
+        sigstore_identities: Vec::new(),
     };
     let host = CompositorHost::new(config).expect("host");
 
@@ -152,6 +154,8 @@ fn runtime_linked_plan_rejects_untrusted_provider() {
         max_blob_size: 64 * 1024 * 1024,
         attest_pkcs11: None,
         pgp_keyring: None,
+        sigstore_trust_root: None,
+        sigstore_identities: Vec::new(),
     };
     let host = CompositorHost::new(config).expect("host");
 
@@ -222,6 +226,8 @@ fn runtime_linked_plan_rejects_multiple_bindings() {
         max_blob_size: 64 * 1024 * 1024,
         attest_pkcs11: None,
         pgp_keyring: None,
+        sigstore_trust_root: None,
+        sigstore_identities: Vec::new(),
     };
     let host = CompositorHost::new(config).expect("host");
     let consumer_digest = host.blobs.put(&consumer).expect("put consumer");
@@ -291,6 +297,8 @@ fn guest_driven_dlopen_runs_through_run_cli() {
         max_blob_size: 64 * 1024 * 1024,
         attest_pkcs11: None,
         pgp_keyring: None,
+        sigstore_trust_root: None,
+        sigstore_identities: Vec::new(),
     };
     let host = CompositorHost::new(config).expect("host");
     let guest_digest = host.blobs.put(&guest).expect("put guest");

@@ -57,6 +57,13 @@ pub struct HostConfig {
     /// Optional PGP keyring (armored public keys). When set, the `pgp`
     /// trust backend is registered and can verify `pgp`-scheme signatures.
     pub pgp_keyring: Option<PathBuf>,
+    /// Optional custom Sigstore trusted-root JSON (a private Sigstore
+    /// instance). `None` uses the embedded Sigstore **production** root.
+    pub sigstore_trust_root: Option<PathBuf>,
+    /// Sigstore signing identities to require (certificate SAN identity +
+    /// OIDC issuer). Empty accepts any valid Fulcio identity; otherwise an
+    /// artifact must match one of these.
+    pub sigstore_identities: Vec<trust_backends::SigstoreIdentity>,
 }
 
 impl Default for HostConfig {
@@ -69,6 +76,8 @@ impl Default for HostConfig {
             max_blob_size: 100 * 1024 * 1024, // 100 MB
             attest_pkcs11: None,
             pgp_keyring: None,
+            sigstore_trust_root: None,
+            sigstore_identities: Vec::new(),
         }
     }
 }
@@ -114,9 +123,13 @@ impl CompositorHost {
         let secrets = SecretManager::new(clock.clone());
         let trust = compose_core::trust::TrustStore::new(config.trust_dir.clone(), clock.clone())?;
         // Register the native trust backends (compose-core ships only `dev`).
-        trust.register_backend(Box::new(trust_backends::SigStoreTrustBackend::new(
-            clock.clone(),
-        )))?;
+        trust.register_backend(Box::new(
+            trust_backends::SigStoreTrustBackend::with_trust_root(
+                config.sigstore_trust_root.clone(),
+                config.sigstore_identities.clone(),
+                clock.clone(),
+            )?,
+        ))?;
         if let Some(keyring) = &config.pgp_keyring {
             trust.register_backend(Box::new(trust_backends::PgpTrustBackend::new(
                 keyring.clone(),

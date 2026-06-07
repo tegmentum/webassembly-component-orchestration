@@ -6,9 +6,10 @@
 //! this native crate and are registered by the wasmtime host at startup
 //! via `TrustStore::register_backend`.
 //!
-//! Status: the PGP backend performs real detached-signature verification
-//! (via rPGP). The SigStore backend is still a stub pending offline
-//! bundle verification; see `docs/remaining-work-plan.md`.
+//! Status: both backends perform real verification. PGP checks detached
+//! OpenPGP signatures (via rPGP); SigStore does offline Sigstore-bundle
+//! verification (via `sigstore-verify`) — signature, Fulcio cert chain,
+//! Rekor inclusion proof, and SCT against a trusted root.
 use compose_core::blobs::compute_digest;
 use compose_core::host::SharedClock;
 use compose_core::trust::TrustBackend;
@@ -16,33 +17,109 @@ use compose_core::types::{Digest, Error, ErrorCode, VerificationMetadata};
 use pgp::composed::Deserializable;
 use std::path::PathBuf;
 
-/// SigStore trust backend.
+/// A required signing identity: the certificate SAN identity and the OIDC
+/// issuer that must have minted it. Verification accepts an artifact only if
+/// one configured identity matches the bundle's certificate.
+#[derive(Debug, Clone)]
+pub struct SigstoreIdentity {
+    /// Expected certificate SAN identity (an email or URI).
+    pub identity: String,
+    /// Expected OIDC issuer (e.g. `https://token.actions.githubusercontent.com`).
+    pub issuer: String,
+}
+
+/// SigStore trust backend: offline verification of a Sigstore bundle.
+///
+/// The `signature` argument to [`TrustBackend::verify`] is a Sigstore
+/// **bundle** (`*.sigstore.json`, v0.1–0.3). Verification is fully offline —
+/// the bundle carries the Fulcio signing certificate, the artifact signature,
+/// and the Rekor inclusion proof + signed entry timestamp. We check, via
+/// `sigstore-verify`: the signature over the artifact, the cert chain to the
+/// trusted root's Fulcio CA, the certificate's SCT, and the transparency-log
+/// inclusion proof. The trusted root defaults to the embedded Sigstore
+/// production root; a custom root JSON may be supplied.
 pub struct SigStoreTrustBackend {
-    // Configured endpoints for a future real SigStore integration (stub today).
-    #[allow(dead_code)]
-    fulcio_url: String,
-    #[allow(dead_code)]
-    rekor_url: String,
+    trusted_root: sigstore_verify::trust_root::TrustedRoot,
+    identities: Vec<SigstoreIdentity>,
     clock: SharedClock,
 }
 
 impl SigStoreTrustBackend {
-    /// Create a new SigStore backend.
+    /// Create a backend trusting the embedded Sigstore **production** root,
+    /// with no identity restriction (any valid Fulcio identity is accepted).
     pub fn new(clock: SharedClock) -> Self {
-        Self {
-            fulcio_url: "https://fulcio.sigstore.dev".to_string(),
-            rekor_url: "https://rekor.sigstore.dev".to_string(),
-            clock,
-        }
+        Self::production(Vec::new(), clock)
+            .expect("embedded Sigstore production trusted root must parse")
     }
 
-    /// Create with custom URLs.
-    pub fn with_urls(fulcio_url: String, rekor_url: String, clock: SharedClock) -> Self {
-        Self {
-            fulcio_url,
-            rekor_url,
+    /// Create a backend trusting the embedded Sigstore production root,
+    /// restricted to the given signing identities (empty = no restriction).
+    pub fn production(
+        identities: Vec<SigstoreIdentity>,
+        clock: SharedClock,
+    ) -> Result<Self, Error> {
+        let trusted_root = sigstore_verify::trust_root::TrustedRoot::from_json(
+            sigstore_verify::trust_root::SIGSTORE_PRODUCTION_TRUSTED_ROOT,
+        )
+        .map_err(|e| {
+            Error::new(
+                ErrorCode::InternalError,
+                format!("invalid embedded Sigstore trusted root: {e:?}"),
+            )
+        })?;
+        Ok(Self {
+            trusted_root,
+            identities,
             clock,
+        })
+    }
+
+    /// Create a backend with a custom trusted-root JSON file (e.g. a private
+    /// Sigstore instance). When `trust_root_path` is `None`, falls back to the
+    /// embedded production root.
+    pub fn with_trust_root(
+        trust_root_path: Option<std::path::PathBuf>,
+        identities: Vec<SigstoreIdentity>,
+        clock: SharedClock,
+    ) -> Result<Self, Error> {
+        let Some(path) = trust_root_path else {
+            return Self::production(identities, clock);
+        };
+        let json = std::fs::read_to_string(&path).map_err(|e| {
+            Error::new(
+                ErrorCode::InternalError,
+                format!("failed to read trusted root {}: {e}", path.display()),
+            )
+        })?;
+        let trusted_root =
+            sigstore_verify::trust_root::TrustedRoot::from_json(&json).map_err(|e| {
+                Error::new(
+                    ErrorCode::InternalError,
+                    format!("invalid trusted root {}: {e:?}", path.display()),
+                )
+            })?;
+        Ok(Self {
+            trusted_root,
+            identities,
+            clock,
+        })
+    }
+
+    /// The verification policies to try: one per configured identity, or a
+    /// single unrestricted policy when none are configured. All policies keep
+    /// the full set of checks (cert chain, SCT, transparency-log inclusion).
+    fn policies(&self) -> Vec<sigstore_verify::VerificationPolicy> {
+        if self.identities.is_empty() {
+            return vec![sigstore_verify::VerificationPolicy::default()];
         }
+        self.identities
+            .iter()
+            .map(|id| {
+                sigstore_verify::VerificationPolicy::default()
+                    .require_identity(id.identity.clone())
+                    .require_issuer(id.issuer.clone())
+            })
+            .collect()
     }
 }
 
@@ -57,6 +134,7 @@ impl TrustBackend for SigStoreTrustBackend {
         bytes: &[u8],
         signature: &[u8],
     ) -> Result<VerificationMetadata, Error> {
+        // The artifact bytes must match the digest we were asked to trust.
         let computed = compute_digest(bytes);
         if &computed != digest {
             return Err(Error::new(
@@ -65,27 +143,56 @@ impl TrustBackend for SigStoreTrustBackend {
             ));
         }
 
-        // STUB. A full implementation verifies an offline Sigstore bundle:
-        // signature over the artifact, cert chain to the Fulcio root, the
-        // Rekor inclusion proof + SET, and an identity policy. See
-        // docs/remaining-work-plan.md (Item 3).
-        tracing::info!(
-            digest = hex::encode(digest),
-            "SigStore verification (stub) - would verify a Sigstore bundle"
-        );
+        // The signature payload is a Sigstore bundle (JSON).
+        let bundle_json = std::str::from_utf8(signature).map_err(|_| {
+            Error::new(
+                ErrorCode::TrustSignatureInvalid,
+                "sigstore bundle is not valid UTF-8 JSON",
+            )
+        })?;
+        let bundle = sigstore_verify::types::Bundle::from_json(bundle_json).map_err(|e| {
+            Error::new(
+                ErrorCode::TrustSignatureInvalid,
+                format!("invalid sigstore bundle: {e:?}"),
+            )
+        })?;
 
-        let sig_str = String::from_utf8_lossy(signature);
-        let identity = if sig_str.contains("identity") {
-            "verified@example.com".to_string()
-        } else {
-            "unknown".to_string()
-        };
+        // Try each policy (identity); accept on the first that verifies.
+        let mut last_err: Option<String> = None;
+        for policy in self.policies() {
+            match sigstore_verify::verify(bytes, &bundle, &policy, &self.trusted_root) {
+                Ok(result) if result.success => {
+                    let signer = result
+                        .identity
+                        .or(result.issuer)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let timestamp = result
+                        .integrated_time
+                        .and_then(|t| u64::try_from(t).ok())
+                        .or_else(|| Some(self.clock.now_unix_secs()));
+                    return Ok(VerificationMetadata {
+                        signer,
+                        timestamp,
+                        backend: "sigstore".to_string(),
+                    });
+                }
+                Ok(result) => {
+                    last_err = Some(format!(
+                        "verification did not succeed (warnings: {:?})",
+                        result.warnings
+                    ));
+                }
+                Err(e) => last_err = Some(format!("{e:?}")),
+            }
+        }
 
-        Ok(VerificationMetadata {
-            signer: identity,
-            timestamp: Some(self.clock.now_unix_secs()),
-            backend: "sigstore".to_string(),
-        })
+        Err(Error::new(
+            ErrorCode::TrustSignatureInvalid,
+            format!(
+                "sigstore bundle did not verify: {}",
+                last_err.unwrap_or_else(|| "no matching identity".to_string())
+            ),
+        ))
     }
 }
 

@@ -135,7 +135,34 @@ already `Vec<u8>` bodies). **Effort: ~2–3 days.**
 
 ---
 
-## Item 3 — SigStore trust backend (largest)
+## Item 3 — SigStore trust backend (largest) ✅ DONE
+
+Implemented in `libs/trust-backends` (`SigStoreTrustBackend`) via the
+`sigstore-verify` crate (`default-features = false` — no network/TUF). The
+`signature` payload is a Sigstore **bundle** (`*.sigstore.json`, v0.1–0.3);
+verification is fully offline:
+
+- signature over the artifact, Fulcio cert chain to the trusted root, the
+  certificate SCT, and the Rekor transparency-log inclusion proof — all done
+  by `sigstore-verify::verify`;
+- trusted root defaults to the **embedded Sigstore production root**;
+  `HostConfig.sigstore_trust_root` supplies a custom one (private instance);
+- identity policy via `HostConfig.sigstore_identities` (SAN identity + OIDC
+  issuer); empty accepts any valid Fulcio identity, otherwise one must match;
+- result → `VerificationMetadata { signer = cert identity, timestamp = tlog
+  integrated time, backend: "sigstore" }`; digest precondition preserved.
+
+Tests (`libs/trust-backends/tests/sigstore.rs`) drive a **real** cosign-produced
+bundle (vendored under `tests/fixtures/`, Apache-2.0): valid bundle accepts;
+wrong identity, tampered artifact, and malformed bundle all reject. The bundle
+verifies via the tlog integrated time, so tests are wall-clock independent.
+
+> Security note: the cert-chain / inclusion-proof / SCT crypto is delegated to
+> `sigstore-verify` (the reference Rust implementation). A `/security-review` of
+> the integration (policy semantics, trust-root provenance, digest binding) is
+> still recommended before relying on it in production.
+
+### Original plan
 
 **Goal.** Verify a Sigstore-signed artifact and return the certificate identity.
 

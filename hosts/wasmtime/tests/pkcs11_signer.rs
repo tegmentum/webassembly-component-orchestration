@@ -96,6 +96,7 @@ fn compositor_host_attests_with_pkcs11_signer() {
             pin: "1234".to_string(),
             so_pin: "1234".to_string(),
         }),
+        pgp_keyring: None,
     };
 
     let host = CompositorHost::new(config).expect("boot CompositorHost with PKCS#11 signer");

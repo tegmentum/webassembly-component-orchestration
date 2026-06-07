@@ -67,6 +67,7 @@ fn runtime_linked_plan_runs_consumer_with_bound_provider() {
         audit_dir: tmp.path().join("audit"),
         max_blob_size: 64 * 1024 * 1024,
         attest_pkcs11: None,
+        pgp_keyring: None,
     };
     let host = CompositorHost::new(config).expect("host");
 
@@ -150,6 +151,7 @@ fn runtime_linked_plan_rejects_untrusted_provider() {
         audit_dir: tmp.path().join("audit"),
         max_blob_size: 64 * 1024 * 1024,
         attest_pkcs11: None,
+        pgp_keyring: None,
     };
     let host = CompositorHost::new(config).expect("host");
 
@@ -219,6 +221,7 @@ fn runtime_linked_plan_rejects_multiple_bindings() {
         audit_dir: tmp.path().join("audit"),
         max_blob_size: 64 * 1024 * 1024,
         attest_pkcs11: None,
+        pgp_keyring: None,
     };
     let host = CompositorHost::new(config).expect("host");
     let consumer_digest = host.blobs.put(&consumer).expect("put consumer");
@@ -287,6 +290,7 @@ fn guest_driven_dlopen_runs_through_run_cli() {
         audit_dir: tmp.path().join("audit"),
         max_blob_size: 64 * 1024 * 1024,
         attest_pkcs11: None,
+        pgp_keyring: None,
     };
     let host = CompositorHost::new(config).expect("host");
     let guest_digest = host.blobs.put(&guest).expect("put guest");

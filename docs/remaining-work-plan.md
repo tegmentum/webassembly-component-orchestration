@@ -43,7 +43,17 @@ need no changes to the dispatch/caching layer.
 
 ---
 
-## Item 1 — PGP trust backend (smallest)
+## Item 1 — PGP trust backend (smallest) ✅ DONE
+
+Implemented in `libs/trust-backends` (`PgpTrustBackend`, rPGP `pgp` 0.19):
+loads an ASCII-armored keyring, parses the detached signature (armored or
+binary), accepts if any trusted key (primary or subkey) verifies it over the
+artifact, and reports the signer (primary user-id, else fingerprint). The host
+registers it when `HostConfig.pgp_keyring` is set. Tests
+(`libs/trust-backends/src/lib.rs`) generate an Ed25519 key in-process and cover
+valid-signature accept, untrusted-key reject, and tampered-artifact reject.
+
+### Original plan
 
 **Goal.** `verify(digest, bytes, signature)` checks a detached OpenPGP signature over
 `bytes` against a keyring, returning the signer identity.

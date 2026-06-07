@@ -52,6 +52,9 @@ pub struct HostConfig {
     /// component instead of the in-process dev key. `None` keeps the
     /// software signer (dev/CI default).
     pub attest_pkcs11: Option<pkcs11_signer::Pkcs11SignerConfig>,
+    /// Optional PGP keyring (armored public keys). When set, the `pgp`
+    /// trust backend is registered and can verify `pgp`-scheme signatures.
+    pub pgp_keyring: Option<PathBuf>,
 }
 
 impl Default for HostConfig {
@@ -63,6 +66,7 @@ impl Default for HostConfig {
             audit_dir: PathBuf::from(".compose/audit"),
             max_blob_size: 100 * 1024 * 1024, // 100 MB
             attest_pkcs11: None,
+            pgp_keyring: None,
         }
     }
 }
@@ -111,6 +115,12 @@ impl CompositorHost {
         trust.register_backend(Box::new(trust_backends::SigStoreTrustBackend::new(
             clock.clone(),
         )))?;
+        if let Some(keyring) = &config.pgp_keyring {
+            trust.register_backend(Box::new(trust_backends::PgpTrustBackend::new(
+                keyring.clone(),
+                clock.clone(),
+            )))?;
+        }
 
         // Register dev backend by default with some test secrets
         let dev_backend = compose_core::secrets::dev::DevBackend::new(clock.clone());

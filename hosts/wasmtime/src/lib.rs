@@ -9,6 +9,8 @@ pub mod cbor_val;
 pub mod compose_host;
 pub mod dynlink;
 pub mod exec;
+#[cfg(feature = "http-server")]
+pub mod http;
 #[cfg(feature = "pkcs11")]
 pub mod pkcs11_backend;
 pub mod pkcs11_signer;

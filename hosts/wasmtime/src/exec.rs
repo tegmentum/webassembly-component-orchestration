@@ -586,20 +586,40 @@ impl ExecHandler {
         Ok(result_bytes)
     }
 
-    /// Serve HTTP requests (stub for M3)
-    pub fn serve_http(&self, _plan: &PlanV1, port: u16) -> Result<(), Error> {
-        self.events.warn(
-            "HTTP server not implemented in M3",
-            Some(format!("port: {}", port)),
-        );
+    /// Serve the plan's `wasi:http` component over HTTP on `port`.
+    /// Requires the `http-server` feature; long-running (blocks).
+    #[cfg(feature = "http-server")]
+    pub fn serve_http(&self, plan: &PlanV1, port: u16) -> Result<(), Error> {
+        let _ = self
+            .policy_enforcer
+            .enforce_policy(&plan.policy)
+            .map_err(|e| Error::new(ErrorCode::PolicyViolation, format!("policy: {e}")))?;
+        let composition = self.emit.compose(plan)?;
+        let component_bytes = self.blobs.get(&composition.digest)?;
+        self.events
+            .info("serving HTTP", Some(format!("port: {port}")));
+        crate::http::serve(&component_bytes, port)
+    }
+
+    /// Without the `http-server` feature, serve-http is unavailable.
+    #[cfg(not(feature = "http-server"))]
+    pub fn serve_http(&self, _plan: &PlanV1, _port: u16) -> Result<(), Error> {
         Err(Error::new(
             ErrorCode::NotImplemented,
-            "serve-http requires http-server feature",
+            "serve-http requires the `http-server` feature",
         ))
     }
 
-    /// Handle a single HTTP request
-    pub fn handle_http(&self, _plan: &PlanV1, request: HttpRequest) -> Result<HttpResponse, Error> {
+    /// Handle a single HTTP request with the plan's `wasi:http` component.
+    /// Requires the `http-server` feature.
+    #[cfg(feature = "http-server")]
+    pub fn handle_http(&self, plan: &PlanV1, request: HttpRequest) -> Result<HttpResponse, Error> {
+        let _ = self
+            .policy_enforcer
+            .enforce_policy(&plan.policy)
+            .map_err(|e| Error::new(ErrorCode::PolicyViolation, format!("policy: {e}")))?;
+        let composition = self.emit.compose(plan)?;
+        let component_bytes = self.blobs.get(&composition.digest)?;
         self.events.info(
             "handling HTTP request",
             Some(format!(
@@ -607,13 +627,20 @@ impl ExecHandler {
                 request.method, request.path
             )),
         );
+        crate::http::handle(&component_bytes, &request)
+    }
 
-        // For M3, return a basic response
-        Ok(HttpResponse {
-            status: 200,
-            headers: vec![("content-type".to_string(), "text/plain".to_string())],
-            body: b"Hello from sys:compose\n".to_vec(),
-        })
+    /// Without the `http-server` feature, handle-http is unavailable.
+    #[cfg(not(feature = "http-server"))]
+    pub fn handle_http(
+        &self,
+        _plan: &PlanV1,
+        _request: HttpRequest,
+    ) -> Result<HttpResponse, Error> {
+        Err(Error::new(
+            ErrorCode::NotImplemented,
+            "handle-http requires the `http-server` feature",
+        ))
     }
 
     /// List all exports from the root component

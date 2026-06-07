@@ -79,7 +79,24 @@ so it builds cleanly host-side. Lives in `libs/trust-backends`.
 
 ---
 
-## Item 2 — HTTP execution (`serve-http` / `handle-http`)
+## Item 2 — HTTP execution (`serve-http` / `handle-http`) ✅ DONE
+
+Implemented behind the `http-server` feature in `hosts/wasmtime/src/http.rs`
+using `wasmtime-wasi-http` 45 + hyper/tokio:
+
+- `handle` drives one request through a `wasi:http/incoming-handler` component
+  via `ProxyPre` on a per-call tokio runtime (its own async engine, isolated
+  from the sync exec path), buffering the response.
+- `serve` runs an HTTP/1.1 hyper server on a port, dispatching each request to
+  the component.
+- `ExecHandler::handle_http` / `serve_http` compose the plan and call into it
+  (feature-gated; the non-feature build returns `NotImplemented`).
+
+Test `tests/http_exec.rs` (feature-gated) drives the `hello-http` example and
+asserts `GET /` → 200 + body; CI builds `hello-http` and runs it. Bodies are
+buffered (`HttpRequest`/`HttpResponse` are `Vec<u8>`); streaming is future work.
+
+### Original plan
 
 **Goal.** Run a composed component that exports `wasi:http/incoming-handler@0.2.x` and
 (a) handle a single request (`handle-http`), (b) serve many over a port (`serve-http`).

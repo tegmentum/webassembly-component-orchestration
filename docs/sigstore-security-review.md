@@ -13,7 +13,9 @@ identity/trust-root policy is security-critical.
   parsing, Fulcio certificate-chain validation, SCT verification, Rekor
   transparency-log inclusion-proof / checkpoint / SET verification, the
   signature-over-artifact cryptographic check, and CVE-2022-36056-style
-  consistency checks. `default-features = false` — no network, no TUF client.
+  consistency checks. `default-features = false` drops the TUF client and the
+  rustls TLS backend (no `rustls` TLS impl is compiled). **Caveat:** it does
+  *not* remove the HTTP client — see "Dependency surface" below.
 - **Owned** by us (`SigStoreTrustBackend::verify`): mapping the orchestrator's
   `verify(digest, bytes, signature)` contract onto the crate; the digest
   precondition; trust-root selection (embedded production vs. configured file);
@@ -66,12 +68,55 @@ construction when the list is empty and document it, but we do not hard-fail
 (some deployments gate elsewhere). **Operators must configure
 `sigstore_identities` in production.**
 
+### ✅ Integration logic re-read — no bugs found
+
+`SigStoreTrustBackend::verify` and the constructors were re-read line by line:
+the policy loop accepts only on `Ok(result)` with `success == true` and rejects
+on every other arm (`Ok(!success)`, `Err`, unparseable bundle, digest
+mismatch); `integrated_time` (i64) is range-checked into `u64`; the signer
+falls back identity → issuer → `"unknown"`. One efficiency note (not a bug):
+with N configured identities the full bundle verification is re-run up to N
+times, since the crate couples the identity check into `verify`.
+
 ### ⚠️ Identity matching is exact-string
 
 `require_identity` / `require_issuer` compare with `==` (no globbing/regex). This
 is safe (no fuzzy match), but means SAN identities with run-IDs or refs must be
 specified exactly. Confirm the SAN/issuer extraction matches the values
 operators will configure (esp. GitHub Actions `…/.github/workflows/…@ref`).
+
+## Dependency surface (lighter local pass: `cargo audit` + `cargo tree`)
+
+Run on the resolved tree (`cargo audit`, `cargo tree`, `cargo deny check
+licenses`) on 2026-06-07:
+
+- **Unused HTTP client linked (correcting an earlier claim).** `sigstore-rekor`
+  declares `reqwest` as a **mandatory** (non-optional) dependency, so
+  `reqwest` + `hyper` + `tokio` are compiled into the host binary via
+  `sigstore-verify`, even though our offline path never makes a network call.
+  `default-features = false` only deselects the TLS backend (so no `rustls` TLS
+  impl is built and reqwest has no working TLS), it cannot drop reqwest itself.
+  Impact: larger build + supply-chain/attack surface than necessary; no runtime
+  network exposure (we never invoke it). Mitigation: no feature exists to remove
+  it — track upstream (request an offline/no-reqwest feature for sigstore-rekor),
+  or vendor/patch if the surface is unacceptable.
+- **Native crypto (`aws-lc-rs`/`aws-lc-sys`) is linked and used.** Pulled by
+  `sigstore-crypto` (signature/hash) and `rustls-webpki` (cert path validation);
+  this is the engine doing the real verification. `aws-lc-sys` compiles native
+  C, which is a build-toolchain (C compiler/cmake) and supply-chain consideration.
+- **`cargo audit`: one advisory — RUSTSEC-2023-0071 (`rsa` Marvin timing
+  side-channel, medium, no fix available).** Source is **`pgp` (rPGP)**, not
+  SigStore. The Marvin attack targets RSA *private-key* operations; our PGP
+  backend only *verifies* with public keys, so practical exposure is negligible.
+  No upgrade available regardless. Plus three warnings: `serde_cbor`
+  unmaintained, `rand` (RUSTSEC-2026-0097) custom-logger unsoundness, `half` —
+  all transitive and low impact.
+- **Licenses: all permissive** (Apache-2.0 / MIT / ISC across the sigstore +
+  crypto crates). One note: `aws-lc-sys` is `ISC AND (Apache-2.0 OR ISC) AND
+  OpenSSL` — the OpenSSL-license clause is worth flagging for license
+  compliance. No copyleft (GPL/AGPL) anywhere in the added tree.
+  (`cargo deny check advisories` currently fails to load its DB copy on a
+  CVSS-4.0 entry — a tooling bug, not our tree; `cargo audit` is authoritative.)
 
 ## Residual risks for the deeper review
 
@@ -104,7 +149,11 @@ operators will configure (esp. GitHub Actions `…/.github/workflows/…@ref`).
 - [ ] Verify embedded trusted-root bytes against the official Sigstore root;
       decide rotation policy.
 - [ ] Fuzz `Bundle::from_json` / verify with malformed & oversized bundles.
-- [ ] `cargo audit` / `cargo deny` on the sigstore dep tree; pin versions.
+- [x] `cargo audit` on the sigstore dep tree (see Dependency surface);
+      `cargo deny` advisory DB needs a newer copy. Still TODO: pin versions.
+- [ ] Decide whether the unconditionally-linked `reqwest`/`hyper`/`tokio`
+      surface is acceptable; file an upstream offline-mode request for
+      `sigstore-rekor` or vendor/patch.
 - [ ] Confirm fail-closed under every error path (no `Ok` leak on partial
       verification) and that caching (`TrustStore`) never caches a failure as
       success.

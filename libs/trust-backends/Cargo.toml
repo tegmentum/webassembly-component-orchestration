@@ -15,9 +15,11 @@ compose-core = { path = "../compose-core" }
 tracing = "0.1"
 hex = "0.4"
 pgp = "0.19.0"
-# Offline Sigstore bundle verification. default-features off: we never fetch
-# trust roots over the network (the production root is embedded), so we avoid
-# pulling TLS/TUF client code.
+# Offline Sigstore bundle verification. default-features off avoids selecting a
+# reqwest TLS backend (no rustls TLS impl is compiled) and the TUF client.
+# NOTE: sigstore-rekor depends on `reqwest` unconditionally (not feature-gated),
+# so reqwest/hyper/tokio are still linked even though our offline path never
+# calls them. See docs/sigstore-security-review.md (dependency surface).
 sigstore-verify = { version = "0.8.0", default-features = false }
 
 [dev-dependencies]

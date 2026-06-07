@@ -5,3 +5,6 @@
 # Host is Apple Silicon; run the container natively for speed. Drop this
 # (or set linux/amd64) if you need exact parity with GitHub's amd64 runners.
 --container-architecture linux/arm64
+# Don't mount the host docker socket into the job container. The workflow
+# has no docker-in-docker steps, and mounting fails on colima sockets.
+--container-daemon-socket -

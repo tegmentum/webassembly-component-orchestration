@@ -29,11 +29,20 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
       # Install the toolchain pinned by rust-toolchain.toml (channel +
-      # rustfmt/clippy components), so the fmt and clippy gates are
-      # deterministic instead of tracking the latest nightly.
+      # rustfmt/clippy/target), so the fmt and clippy gates are
+      # deterministic instead of tracking the latest nightly. `rustup show`
+      # materializes it. GitHub's hosted runners ship rustup; bootstrap it
+      # if absent (e.g. running under act with a minimal image).
       - name: Install pinned Rust toolchain
         if: steps.cargo.outputs.found == 'true'
-        run: rustup show
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show
       - name: cargo fmt --check
         if: steps.cargo.outputs.found == 'true'
         run: cargo fmt --all -- --check
@@ -77,7 +86,14 @@ jobs:
           fi
       - name: Install pinned Rust toolchain
         if: steps.ctl.outputs.found == 'true'
-        run: rustup show
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show
       - name: Build composectl
         if: steps.ctl.outputs.found == 'true'
         working-directory: tools/composectl

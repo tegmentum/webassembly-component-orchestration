@@ -25,9 +25,23 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-TOKEN="$(gh auth token)"
+# act defaults to /var/run/docker.sock, which may be a stale symlink when
+# the active daemon is colima / a non-default Docker context. Point act at
+# whatever socket the docker CLI is actually using.
+if [[ -z "${DOCKER_HOST:-}" ]]; then
+    ctx_host="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+    if [[ -n "$ctx_host" ]]; then
+        export DOCKER_HOST="$ctx_host"
+    fi
+fi
+
+# Prefer an explicit PAT (needed for access to the forked
+# tegmentum/wasm-tools dependency, which the gh OAuth token may not reach);
+# fall back to the gh CLI token otherwise.
+#   TEGMENTUM_CI_TOKEN=ghp_xxx scripts/ci-local.sh -j rust-checks
+TOKEN="${TEGMENTUM_CI_TOKEN:-$(gh auth token 2>/dev/null || true)}"
 if [[ -z "$TOKEN" ]]; then
-    echo "error: no gh token. Run: gh auth login" >&2
+    echo "error: no token. Set TEGMENTUM_CI_TOKEN=<PAT> or run: gh auth login" >&2
     exit 1
 fi
 

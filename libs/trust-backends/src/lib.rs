@@ -67,11 +67,34 @@ impl SigStoreTrustBackend {
                 format!("invalid embedded Sigstore trusted root: {e:?}"),
             )
         })?;
-        Ok(Self {
+        Ok(Self::build(trusted_root, identities, clock))
+    }
+
+    /// Assemble the backend, warning when no identity policy is configured.
+    ///
+    /// With no identities, verification accepts *any* artifact bearing a valid
+    /// signature from the trusted Sigstore instance — i.e. any identity Fulcio
+    /// will mint a certificate for (e.g. any GitHub account). For a trust gate
+    /// that decides what code runs, that is rarely the intended policy: the
+    /// identity allow-list is the actual access control. We surface this loudly
+    /// rather than failing, since some deployments legitimately gate elsewhere.
+    fn build(
+        trusted_root: sigstore_verify::trust_root::TrustedRoot,
+        identities: Vec<SigstoreIdentity>,
+        clock: SharedClock,
+    ) -> Self {
+        if identities.is_empty() {
+            tracing::warn!(
+                "sigstore trust backend configured with NO identity allow-list: any valid \
+                 signature from the trusted Sigstore instance will be accepted, regardless of \
+                 signer. Configure sigstore_identities to restrict to known signers."
+            );
+        }
+        Self {
             trusted_root,
             identities,
             clock,
-        })
+        }
     }
 
     /// Create a backend with a custom trusted-root JSON file (e.g. a private
@@ -98,11 +121,7 @@ impl SigStoreTrustBackend {
                     format!("invalid trusted root {}: {e:?}", path.display()),
                 )
             })?;
-        Ok(Self {
-            trusted_root,
-            identities,
-            clock,
-        })
+        Ok(Self::build(trusted_root, identities, clock))
     }
 
     /// The verification policies to try: one per configured identity, or a

@@ -158,9 +158,11 @@ wrong identity, tampered artifact, and malformed bundle all reject. The bundle
 verifies via the tlog integrated time, so tests are wall-clock independent.
 
 > Security note: the cert-chain / inclusion-proof / SCT crypto is delegated to
-> `sigstore-verify` (the reference Rust implementation). A `/security-review` of
-> the integration (policy semantics, trust-root provenance, digest binding) is
-> still recommended before relying on it in production.
+> `sigstore-verify` (the reference Rust implementation). A self-audit (binding
+> confirmed, fails closed, identity-policy hardening) and a checklist for a
+> deeper billed review are in [`sigstore-security-review.md`](sigstore-security-review.md).
+> A `/code-review ultra` of the integration is still recommended before
+> production reliance.
 
 ### Original plan
 

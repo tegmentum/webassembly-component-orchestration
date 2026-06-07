@@ -107,6 +107,10 @@ impl CompositorHost {
         let events = EventCollector::new(clock.clone());
         let secrets = SecretManager::new(clock.clone());
         let trust = compose_core::trust::TrustStore::new(config.trust_dir.clone(), clock.clone())?;
+        // Register the native trust backends (compose-core ships only `dev`).
+        trust.register_backend(Box::new(trust_backends::SigStoreTrustBackend::new(
+            clock.clone(),
+        )))?;
 
         // Register dev backend by default with some test secrets
         let dev_backend = compose_core::secrets::dev::DevBackend::new(clock.clone());

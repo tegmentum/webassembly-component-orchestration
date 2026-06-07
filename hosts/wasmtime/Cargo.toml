@@ -18,6 +18,9 @@ wat = "1"
 # Portable orchestrator core (no wasmtime dependency)
 compose-core = { path = "../../libs/compose-core" }
 
+# Native trust backends (sigstore, pgp) registered at host startup.
+trust-backends = { path = "../../libs/trust-backends" }
+
 # Tamper-evident audit: native SQLite-backed secure log. The
 # secure-log core crate comes transitively via compose-core; the
 # host owns the durable SQLite store.

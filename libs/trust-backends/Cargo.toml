@@ -1,0 +1,16 @@
+[package]
+name = "trust-backends"
+version = "0.0.1"
+edition = "2021"
+authors = ["Zachary Whitley <maintainer@example.com>"]
+description = "Native trust backends (SigStore, PGP) for the compose orchestrator"
+license = "Apache-2.0"
+publish = false
+
+# These backends pull heavy, often-native dependencies (X.509, OpenPGP,
+# Merkle proofs). They live here, not in compose-core, so that crate stays
+# wasm32-wasip2 clean. The wasmtime host registers them at startup.
+[dependencies]
+compose-core = { path = "../compose-core" }
+tracing = "0.1"
+hex = "0.4"

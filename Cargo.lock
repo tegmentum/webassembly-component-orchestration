@@ -532,6 +532,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "trust-backends",
  "wasmtime",
  "wasmtime-wasi",
  "wat 1.249.0",
@@ -2759,6 +2760,15 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trust-backends"
+version = "0.0.1"
+dependencies = [
+ "compose-core",
+ "hex",
+ "tracing",
 ]
 
 [[package]]

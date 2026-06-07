@@ -49,9 +49,10 @@ impl TrustStore {
             clock: clock.clone(),
         };
 
-        // Register default backends
-        store.register_backend(Box::new(DevTrustBackend::new(clock.clone())))?;
-        store.register_backend(Box::new(SigStoreTrustBackend::new(clock)))?;
+        // Register the wasm-clean default backend. Heavier backends
+        // (sigstore, pgp) live in the native `trust-backends` crate and are
+        // registered by the host via `register_backend`.
+        store.register_backend(Box::new(DevTrustBackend::new(clock)))?;
 
         Ok(store)
     }

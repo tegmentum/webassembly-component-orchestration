@@ -192,3 +192,73 @@ fn runtime_linked_plan_rejects_untrusted_provider() {
         compose_host_wasmtime::ErrorCode::TrustUntrustedSource
     );
 }
+
+/// Flavor A binds one endpoint provider per plan (a consumer imports
+/// `endpoint` once). More than one binding is rejected — multiple
+/// providers are a flavor-B concern.
+#[test]
+fn runtime_linked_plan_rejects_multiple_bindings() {
+    let (Ok(consumer), Ok(provider)) = (
+        std::fs::read(example(
+            "dynlink-endpoint-consumer",
+            "dynlink-endpoint-consumer.wasm",
+        )),
+        std::fs::read(example(
+            "dynlink-echo-provider",
+            "dynlink_echo_provider.wasm",
+        )),
+    ) else {
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let config = HostConfig {
+        blob_dir: tmp.path().join("blobs"),
+        cache_dir: tmp.path().join("cache"),
+        trust_dir: tmp.path().join("trust"),
+        audit_dir: tmp.path().join("audit"),
+        max_blob_size: 64 * 1024 * 1024,
+        attest_pkcs11: None,
+    };
+    let host = CompositorHost::new(config).expect("host");
+    let consumer_digest = host.blobs.put(&consumer).expect("put consumer");
+    let provider_digest = host.blobs.put(&provider).expect("put provider");
+
+    let binding = |id: &str| ImportBinding {
+        consumer_id: Some("consumer".to_string()),
+        import_name: "compose:dynlink/endpoint".to_string(),
+        provider_id: id.to_string(),
+        export_name: "compose:dynlink/endpoint".to_string(),
+    };
+    let plan = PlanV1 {
+        version: "1".to_string(),
+        root: "consumer".to_string(),
+        components: vec![
+            ComponentSpec {
+                id: "consumer".to_string(),
+                digest: consumer_digest,
+                source: None,
+            },
+            ComponentSpec {
+                id: "provider".to_string(),
+                digest: provider_digest.clone(),
+                source: None,
+            },
+            ComponentSpec {
+                id: "provider2".to_string(),
+                digest: provider_digest,
+                source: None,
+            },
+        ],
+        bindings: vec![binding("provider"), binding("provider2")],
+        secrets: vec![],
+        policy: runtime_policy(),
+        linkage: Linkage::Runtime,
+    };
+
+    let err = host
+        .exec_handler()
+        .run_cli(&plan, vec![], vec![])
+        .expect_err("multiple bindings must be rejected");
+    assert_eq!(err.code, compose_host_wasmtime::ErrorCode::PlanInvalidGraph);
+}

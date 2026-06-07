@@ -389,9 +389,14 @@ end-to-end `runtime_linked_plan_runs_consumer_with_bound_provider` and
 full stack through `CompositorHost`/`run_cli`). The conformance golden suite
 still passes, confirming static-plan digests are unchanged.
 
+**By design**: flavor A binds **one** endpoint provider per plan — a consumer
+imports `compose:dynlink/endpoint` exactly once, so a single binding satisfies
+it (>1 binding is rejected at exec with a pointer to flavor B). Multiple
+providers are served by **flavor B**, where the guest resolves any number of
+them on demand via `compose:dynlink/linker`.
+
 **Deferred**: richer validation that both endpoints speak `endpoint` (needs
-component-type introspection, not available in portable `validate`); flavor A
-currently supports exactly one endpoint binding per plan.
+component-type introspection, not available in portable `validate`).
 
 ### Phase 5 — Policy verbs, audit, and docs ✅
 

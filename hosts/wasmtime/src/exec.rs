@@ -298,10 +298,15 @@ impl ExecHandler {
                 ))
             }
             _ => {
+                // A consumer imports `compose:dynlink/endpoint` exactly once,
+                // so a single plan binding satisfies it. Multiple providers
+                // are served by flavor B: the guest resolves them on demand
+                // via `compose:dynlink/linker` (resolve-by-id/digest).
                 return Err(Error::new(
-                    ErrorCode::NotImplemented,
-                    "runtime linkage with multiple bindings is not yet supported",
-                ))
+                    ErrorCode::PlanInvalidGraph,
+                    "runtime linkage binds one endpoint provider per plan; \
+                     use guest-driven linking (compose:dynlink/linker) for multiple providers",
+                ));
             }
         };
 

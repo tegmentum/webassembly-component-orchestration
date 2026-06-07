@@ -28,6 +28,14 @@ impl Guest for EchoProvider {
             "echo" => payload,
             "upper" => payload.to_ascii_uppercase(),
             "len" => payload.len().to_string().into_bytes(),
+            // Never returns: used by the host to test CPU/fuel and
+            // wall-clock (epoch) limit enforcement, which interrupt it.
+            "spin" => {
+                let mut n: u64 = 0;
+                loop {
+                    n = core::hint::black_box(n.wrapping_add(1));
+                }
+            }
             other => format!("unknown-method:{other}").into_bytes(),
         };
         Ok(response)

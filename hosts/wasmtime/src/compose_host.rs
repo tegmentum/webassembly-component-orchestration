@@ -135,18 +135,23 @@ impl InvokerHost for HostState {
         component_bytes: Vec<u8>,
         limits: Limits,
     ) -> Result<wasmtime::component::Resource<compose::host::invoker::Instance>, ExecError> {
-        // Sandbox the instance in its own fuel-enabled engine so memory and
-        // CPU caps can be enforced. `memory_bytes` caps linear memory
-        // (StoreLimits); `cpu_ms` becomes a fuel budget via an approximate
-        // instruction-per-ms factor. `timeout_ms` (true wall-clock) needs
-        // epoch interruption + a ticker and is not yet enforced;
-        // `stdio_buffer_bytes` does not apply to function invocation.
+        // Sandbox the instance in the shared fuel + epoch engine so memory,
+        // CPU, and wall-clock caps can be enforced. `memory_bytes` caps
+        // linear memory (StoreLimits); `cpu_ms` becomes a fuel budget via an
+        // approximate instruction-per-ms factor; `timeout_ms` becomes an
+        // epoch deadline (wall-clock). `stdio_buffer_bytes` does not apply
+        // to function invocation (no stdio is captured).
         const FUEL_PER_MS: u64 = 1_000_000;
-        let engine =
-            crate::dynlink::sandbox_engine().map_err(|e| ExecError::HostError(e.message))?;
+        let tick_ms = crate::dynlink::EPOCH_TICK.as_millis() as u64;
+        let engine = crate::dynlink::sandbox_engine();
         let sandbox_limits = crate::dynlink::SandboxLimits {
             memory_bytes: limits.memory_bytes,
             fuel: limits.cpu_ms.map(|ms| ms.saturating_mul(FUEL_PER_MS)),
+            // Round the timeout up to whole ticks (at least one).
+            epoch_ticks: limits
+                .timeout_ms
+                .map(|ms| ms.saturating_add(tick_ms - 1) / tick_ms.max(1))
+                .map(|ticks| ticks.max(1)),
         };
         let owned = crate::dynlink::instantiate_owned(&engine, &component_bytes, sandbox_limits)
             .map_err(|e| ExecError::InvalidComponent(e.message))?;
@@ -215,14 +220,13 @@ impl HostInstance for HostState {
         let mut results = vec![wasmtime::component::Val::Bool(false); result_count];
         func.call(&mut owned.store, &args, &mut results)
             .map_err(|e| {
-                // A fuel/CPU-budget exhaustion surfaces as an OutOfFuel trap.
-                if matches!(
-                    e.downcast_ref::<wasmtime::Trap>(),
-                    Some(wasmtime::Trap::OutOfFuel)
-                ) {
-                    ExecError::LimitExceeded("cpu/fuel budget exceeded".to_string())
-                } else {
-                    ExecError::Trap(format!("{e:?}"))
+                // CPU/fuel exhaustion -> OutOfFuel; wall-clock timeout -> Interrupt.
+                match e.downcast_ref::<wasmtime::Trap>() {
+                    Some(wasmtime::Trap::OutOfFuel) => {
+                        ExecError::LimitExceeded("cpu/fuel budget exceeded".to_string())
+                    }
+                    Some(wasmtime::Trap::Interrupt) => ExecError::TimedOut,
+                    _ => ExecError::Trap(format!("{e:?}")),
                 }
             })?;
         // wasmtime 45: post_return is a no-op and deprecated, so it is not
@@ -648,6 +652,59 @@ mod invoker_tests {
         assert!(matches!(&entries[0].0, Cbor::Text(s) if s == "ok"));
 
         HostInstance::drop(&mut state, handle).expect("drop");
+    }
+
+    /// Helper: instantiate the echo provider under `limits` and call its
+    /// `spin` method (which never returns), expecting an enforced trap.
+    fn call_spin_under(limits: Limits) -> ExecError {
+        use ciborium::value::Value as Cbor;
+        let bytes = echo_provider().expect("echo provider built");
+        let mut state = host_state();
+        let handle = InvokerHost::instantiate(&mut state, bytes, limits).expect("instantiate");
+        let exports = HostInstance::list_exports(&mut state, handle_to(&handle));
+        let f = exports
+            .iter()
+            .find(|n| n.ends_with("#handle"))
+            .expect("handle export")
+            .clone();
+        let id = HostInstance::get_export(&mut state, handle_to(&handle), f).unwrap();
+        let args = Cbor::Array(vec![Cbor::Text("spin".into()), Cbor::Bytes(vec![])]);
+        let mut args_cbor = Vec::new();
+        ciborium::into_writer(&args, &mut args_cbor).unwrap();
+        HostInstance::call_with_cbor(&mut state, handle_to(&handle), id, args_cbor)
+            .expect_err("spin must be interrupted")
+    }
+
+    /// A CPU/fuel budget interrupts a runaway (spinning) call.
+    #[test]
+    fn cpu_fuel_limit_interrupts_spin() {
+        if echo_provider().is_none() {
+            return;
+        }
+        let limits = Limits {
+            cpu_ms: Some(100),
+            memory_bytes: None,
+            timeout_ms: None,
+            stdio_buffer_bytes: None,
+        };
+        let err = call_spin_under(limits);
+        assert!(matches!(err, ExecError::LimitExceeded(_)), "got {err:?}");
+    }
+
+    /// A wall-clock timeout (epoch deadline) interrupts a runaway call.
+    #[test]
+    fn wall_clock_timeout_interrupts_spin() {
+        if echo_provider().is_none() {
+            return;
+        }
+        let limits = Limits {
+            cpu_ms: None,
+            memory_bytes: None,
+            timeout_ms: Some(50),
+            stdio_buffer_bytes: None,
+        };
+        let err = call_spin_under(limits);
+        assert!(matches!(err, ExecError::TimedOut), "got {err:?}");
     }
 
     /// Malformed component bytes surface as invalid-component, not a stub.

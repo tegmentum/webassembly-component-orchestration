@@ -440,6 +440,10 @@ fn core_error(code: compose_core::types::ErrorCode, message: String) -> compose_
     compose_core::types::Error::new(code, message)
 }
 
+/// Epoch ticker granularity. The wall-clock timeout resolution is one
+/// tick; deadlines are rounded up to whole ticks.
+pub const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// Resource limits applied to a sandboxed instance.
 #[derive(Default, Clone, Copy)]
 pub struct SandboxLimits {
@@ -448,21 +452,43 @@ pub struct SandboxLimits {
     /// CPU budget expressed as wasmtime fuel units. `None` = unbounded.
     /// Requires the engine to have been built with `consume_fuel`.
     pub fuel: Option<u64>,
+    /// Wall-clock deadline expressed in [`EPOCH_TICK`] units. `None` =
+    /// unbounded. Requires the engine to have `epoch_interruption`.
+    pub epoch_ticks: Option<u64>,
 }
 
-/// Build an engine suitable for sandboxed `invoker` instances: the
-/// component model plus fuel consumption (so a CPU/fuel budget can be
-/// enforced). Cheap to clone; kept alive by any `Store` created from it.
-pub fn sandbox_engine() -> Result<Engine, compose_core::types::Error> {
-    let mut config = wasmtime::Config::new();
-    config.wasm_component_model(true);
-    config.consume_fuel(true);
-    Engine::new(&config).map_err(|e| {
-        core_error(
-            compose_core::types::ErrorCode::InternalError,
-            format!("failed to build sandbox engine: {e:?}"),
-        )
-    })
+/// The shared engine for sandboxed `invoker` instances: component model +
+/// fuel consumption + epoch interruption (so CPU and wall-clock budgets
+/// can be enforced). Built once; a single background thread advances the
+/// engine's epoch every [`EPOCH_TICK`] for wall-clock timeouts.
+///
+/// Cheap to clone; kept alive by any `Store` created from it (and, being a
+/// process-lifetime singleton, by the ticker thread).
+pub fn sandbox_engine() -> Engine {
+    static ENGINE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+    ENGINE
+        .get_or_init(|| {
+            let mut config = wasmtime::Config::new();
+            config.wasm_component_model(true);
+            config.consume_fuel(true);
+            config.epoch_interruption(true);
+            // This config is static and valid, so construction cannot fail.
+            let engine = Engine::new(&config).expect("sandbox engine config is valid");
+            let weak = engine.weak();
+            // Daemon ticker: advances the epoch until the engine is dropped
+            // (never, for this singleton).
+            let _ = std::thread::Builder::new()
+                .name("dynlink-epoch-ticker".to_string())
+                .spawn(move || loop {
+                    std::thread::sleep(EPOCH_TICK);
+                    match weak.upgrade() {
+                        Some(e) => e.increment_epoch(),
+                        None => break,
+                    }
+                });
+            engine
+        })
+        .clone()
 }
 
 /// A component instantiated in its own isolated WASI store, owned by the
@@ -578,6 +604,14 @@ pub fn instantiate_owned(
     // built with `consume_fuel`. With fuel enabled the store starts at 0,
     // so we must always set it (u64::MAX ~ unbounded when no limit).
     let _ = store.set_fuel(limits.fuel.unwrap_or(u64::MAX));
+    // Wall-clock cap via epoch interruption. With epoch_interruption the
+    // store starts at deadline 0, so set it unconditionally. The deadline
+    // is `current_epoch + delta`, so the "unbounded" delta is u64::MAX/2
+    // (a full u64::MAX overflows once the ticker has advanced the epoch).
+    // The background ticker advances the engine epoch; on deadline the
+    // guest traps with Trap::Interrupt.
+    store.set_epoch_deadline(limits.epoch_ticks.unwrap_or(u64::MAX / 2));
+    store.epoch_deadline_trap();
 
     let instance = linker.instantiate(&mut store, &component).map_err(|e| {
         core_error(

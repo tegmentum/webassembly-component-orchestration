@@ -105,6 +105,15 @@ record capability {
   level: capability-level,
 }
 
+/// How a plan's component imports are linked.
+enum linkage-mode {
+  /// Imports merged into one sealed artifact at emit time (the default).
+  /// (`static` is a WIT keyword, hence the `%` escape.)
+  %static,
+  /// Imports bound at exec time via the compose:dynlink bridge.
+  runtime,
+}
+
 /// Determinism mode
 enum determinism-mode {
   /// Strict deterministic execution required

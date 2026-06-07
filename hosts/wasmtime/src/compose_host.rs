@@ -389,6 +389,7 @@ pub fn sample_plan() -> exports::sys::compose::plan::PlanV1 {
                 io_ops: None,
             },
         },
+        linkage: t::LinkageMode::Static,
     }
 }
 
@@ -480,6 +481,7 @@ pub fn sample_plan_with_digest(component_digest: Vec<u8>) -> exports::sys::compo
                 io_ops: None,
             },
         },
+        linkage: t::LinkageMode::Static,
     }
 }
 

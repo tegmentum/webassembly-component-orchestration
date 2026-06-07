@@ -13,7 +13,7 @@ use crate::exports::sys::compose::plan::{
 use crate::sys::compose::types::{
     Capability as WitCapability, CapabilityLevel as WitCapabilityLevel,
     DeterminismMode as WitDeterminismMode, Error as WitError, ErrorCode as WitErrorCode,
-    Policy as WitPolicy, ResourceLimits as WitResourceLimits,
+    LinkageMode as WitLinkageMode, Policy as WitPolicy, ResourceLimits as WitResourceLimits,
 };
 
 use compose_core::types::{
@@ -35,9 +35,10 @@ pub fn wit_plan_to_core(p: WitPlanV1) -> CorePlanV1 {
         bindings: p.bindings.into_iter().map(wit_binding_to_core).collect(),
         secrets: p.secrets.into_iter().map(wit_secret_to_core).collect(),
         policy: wit_policy_to_core(p.policy),
-        // The WIT plan-v1 does not yet carry a linkage field; default to
-        // Static (the historical behavior) until the WIT catches up.
-        linkage: CoreLinkage::Static,
+        linkage: match p.linkage {
+            WitLinkageMode::Static => CoreLinkage::Static,
+            WitLinkageMode::Runtime => CoreLinkage::Runtime,
+        },
     }
 }
 
@@ -109,6 +110,10 @@ pub fn core_plan_to_wit(p: CorePlanV1) -> WitPlanV1 {
         bindings: p.bindings.into_iter().map(core_binding_to_wit).collect(),
         secrets: p.secrets.into_iter().map(core_secret_to_wit).collect(),
         policy: core_policy_to_wit(p.policy),
+        linkage: match p.linkage {
+            CoreLinkage::Static => WitLinkageMode::Static,
+            CoreLinkage::Runtime => WitLinkageMode::Runtime,
+        },
     }
 }
 

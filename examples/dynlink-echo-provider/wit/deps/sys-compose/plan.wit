@@ -1,6 +1,6 @@
 /// Plan interface - declarative composition graph
 interface plan {
-  use types.{error, digest, component-id, secret-token, policy};
+  use types.{error, digest, component-id, secret-token, policy, linkage-mode};
 
   /// Component specification in the plan
   record component-spec {
@@ -44,6 +44,8 @@ interface plan {
     secrets: list<secret-binding>,
     /// Execution policy
     policy: policy,
+    /// Linking strategy (static composition vs runtime linking).
+    linkage: linkage-mode,
   }
 
   /// Serialize a plan to canonical CBOR bytes

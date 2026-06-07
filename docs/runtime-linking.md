@@ -361,10 +361,11 @@ or constructs a `DynState` in the live exec path — that integration (plus the
 
 - **`linkage` field**: `PlanV1` gains `linkage: Linkage` (`Static` default,
   `Runtime`), skipped from the canonical encoding when `Static` so existing
-  plan digests are byte-identical. *Scope note:* the field is on the **core**
-  `PlanV1` only; the WIT `plan-v1` record does not yet carry it (the wit→core
-  adapter defaults to `Static`), since flavor A is driven by the native host
-  reading a core plan. Mirroring it into the WIT is follow-on sync work.
+  plan digests are byte-identical. It is mirrored into the WIT `plan-v1`
+  record as a `linkage-mode` enum (`%static`/`runtime`); the orchestrator-wasm
+  adapters map it both directions. Because the digest is computed on the
+  *core* plan (where `Static` is omitted), adding the WIT field leaves plan
+  digests unchanged (verified by the orchestrator smoke + conformance suites).
 - **Cross-store routing**: rather than `func_wrap` + shared state, an
   `endpoint-consumer` world lets the host *import* `endpoint`; `ConsumerState`
   **owns** the bound provider's `Store` and satisfies the import via a trait
@@ -388,8 +389,7 @@ end-to-end `runtime_linked_plan_runs_consumer_with_bound_provider` and
 full stack through `CompositorHost`/`run_cli`). The conformance golden suite
 still passes, confirming static-plan digests are unchanged.
 
-**Deferred**: mirroring `linkage` into the WIT `plan-v1` + orchestrator-wasm
-adapters; richer validation that both endpoints speak `endpoint` (needs
+**Deferred**: richer validation that both endpoints speak `endpoint` (needs
 component-type introspection, not available in portable `validate`); flavor A
 currently supports exactly one endpoint binding per plan.
 

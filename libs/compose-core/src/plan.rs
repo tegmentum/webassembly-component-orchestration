@@ -84,7 +84,6 @@ impl PlanValidator {
     /// `composectl plan validate`.
     pub fn validate_structure(&self, plan: &PlanV1) -> Result<(), Error> {
         self.validate_schema(plan)?;
-        self.validate_canonical_order(plan)?;
         self.validate_graph(plan)?;
         self.validate_bindings(plan)?;
         self.validate_linkage(plan)?;
@@ -92,8 +91,8 @@ impl PlanValidator {
     }
 
     /// Components must appear in canonical (ascending `id`) order so a plan has
-    /// a single canonical encoding. Enforced for file validation; the runtime
-    /// [`validate`] path is order-agnostic (it works on already-trusted plans).
+    /// a single canonical encoding. Enforced as part of schema validation, so
+    /// it applies to every validation path (`validate` and `validate_structure`).
     fn validate_canonical_order(&self, plan: &PlanV1) -> Result<(), Error> {
         if plan.components.windows(2).any(|w| w[0].id > w[1].id) {
             return Err(Error::new(
@@ -171,6 +170,9 @@ impl PlanValidator {
                 ));
             }
         }
+
+        // Components must be in canonical (ascending id) order.
+        self.validate_canonical_order(plan)?;
 
         Ok(())
     }

@@ -582,14 +582,15 @@ mod tests {
             version: "1".to_string(),
             root: "root".to_string(),
             components: vec![
-                ComponentSpec {
-                    id: "root".to_string(),
-                    digest: root_digest.clone(),
-                    source: None,
-                },
+                // Components must be in canonical (ascending id) order.
                 ComponentSpec {
                     id: "dependency".to_string(),
                     digest: dep_digest,
+                    source: None,
+                },
+                ComponentSpec {
+                    id: "root".to_string(),
+                    digest: root_digest.clone(),
                     source: None,
                 },
             ],

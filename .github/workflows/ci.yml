@@ -154,28 +154,21 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
           fi
           rustup show
+      # composectl is a workspace member: the binary lands in the workspace-root
+      # target/, not tools/composectl/target/.
       - name: Build composectl
         if: steps.ctl.outputs.found == 'true'
-        working-directory: tools/composectl
-        run: cargo build --release
-      - name: Smoke test composectl plan validation
-        if: steps.ctl.outputs.found == 'true'
-        working-directory: tools/composectl
-        run: |
-          if ls ../../conformance/vectors/*.cbor >/dev/null 2>&1; then
-            for plan in ../../conformance/vectors/*.cbor; do
-              ./target/release/composectl plan validate "$plan"
-            done
-          else
-            echo "No canonical vectors yet; skipping"
-          fi
+        run: cargo build --release -p composectl
+      # The conformance runner is the validation gate: it feeds every vector to
+      # `composectl plan validate` and checks the outcome (pass/reject) against
+      # conformance/vectors/fixtures.json, including the negative fixtures.
       - name: Run conformance runner summary
         if: steps.ctl.outputs.found == 'true'
         run: |
           mkdir -p artifacts
           cargo run -p conformance-runner -- run --json artifacts/conformance-summary.json
         env:
-          CARGO_BIN_EXE_composectl: ${{ github.workspace }}/tools/composectl/target/release/composectl
+          CARGO_BIN_EXE_composectl: ${{ github.workspace }}/target/release/composectl
       - name: Upload conformance summary
         if: steps.ctl.outputs.found == 'true'
         uses: actions/upload-artifact@v4

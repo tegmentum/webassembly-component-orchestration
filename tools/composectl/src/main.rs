@@ -306,22 +306,31 @@ fn handle_blob(host: &CompositorHost, action: BlobAction, format: &OutputFormat)
 }
 
 fn read_plan(path: &PathBuf) -> Result<compose_host_wasmtime::types::PlanV1> {
-    let content =
-        fs::read_to_string(path).with_context(|| format!("Failed to read plan from {:?}", path))?;
+    let bytes = fs::read(path).with_context(|| format!("Failed to read plan from {:?}", path))?;
 
-    // Try JSON first
+    // The canonical plan encoding is CBOR (e.g. the conformance vectors and
+    // the digest preimage). Decode `.cbor` with the canonical deserializer;
+    // otherwise treat the file as UTF-8 text and try JSON then TOML.
+    let is_cbor = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("cbor"));
+    if is_cbor {
+        return compose_host_wasmtime::plan::deserialize(&bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse plan as CBOR: {}", e.message));
+    }
+
+    let content = String::from_utf8(bytes)
+        .context("plan is not valid UTF-8; for a binary CBOR plan use a .cbor file extension")?;
     match serde_json::from_str(&content) {
         Ok(plan) => return Ok(plan),
         Err(e) => eprintln!("JSON parse error: {}", e),
     }
-
-    // Try TOML
     match toml::from_str(&content) {
         Ok(plan) => return Ok(plan),
         Err(e) => eprintln!("TOML parse error: {}", e),
     }
-
-    anyhow::bail!("Failed to parse plan as JSON or TOML");
+    anyhow::bail!("Failed to parse plan as JSON, TOML, or CBOR");
 }
 
 fn output<T: serde::Serialize>(format: &OutputFormat, message: &str, data: &T) -> Result<()> {

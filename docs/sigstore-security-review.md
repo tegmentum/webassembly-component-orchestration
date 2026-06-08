@@ -167,9 +167,13 @@ licenses`) on 2026-06-07:
    official Sigstore TUF root, and define an update cadence (crate bump) for
    root rotations. Treat a custom `sigstore_trust_root` file as security input.
 2. **Third-party crypto + version pinning.** `sigstore-verify` (and `x509-cert`,
-   `p256`, `aws-lc-rs`, Rekor Merkle code) carry the security weight. `Cargo.lock`
-   pins exact versions today; decide whether to also tighten the version reqs and
-   wire `cargo audit` into CI, re-reviewing on upgrade.
+   `p256`, `aws-lc-rs`, Rekor Merkle code) carry the security weight. `cargo
+   audit` now runs as a CI gate (the `cargo-audit` job), with accepted/no-fix
+   advisories documented in `.cargo/audit.toml` (currently only the `rsa`
+   Marvin advisory, via `pgp`, which our verify-only usage doesn't exercise).
+   `Cargo.lock` pins exact versions; we keep caret version reqs (so patch-level
+   security fixes flow) rather than `=`-pinning, relying on the audit gate +
+   lockfile. Re-review the ignore list on every `pgp`/sigstore upgrade.
 3. **Unconditional `reqwest`/`hyper`/`tokio` surface.** Decide whether it's
    acceptable; file an upstream offline-mode request for `sigstore-rekor` or
    vendor/patch (no feature removes it today).
@@ -187,9 +191,8 @@ licenses`) on 2026-06-07:
 - [ ] Verify embedded trusted-root bytes against the official Sigstore root;
       decide rotation policy.
 - [x] Bound + reject malformed/oversized bundles (size cap + tests).
-- [x] `cargo audit` on the sigstore dep tree (see Dependency surface);
-      `cargo deny` advisory DB needs a newer copy. Still TODO: tighten version
-      pins / wire `cargo audit` into CI.
+- [x] `cargo audit` wired as a CI gate (`.cargo/audit.toml` documents the one
+      accepted no-fix advisory). `cargo deny`'s DB copy needs a newer version.
 - [ ] Decide whether the unconditionally-linked `reqwest`/`hyper`/`tokio`
       surface is acceptable; file an upstream offline-mode request for
       `sigstore-rekor` or vendor/patch.

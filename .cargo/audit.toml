@@ -1,0 +1,13 @@
+# cargo-audit configuration (https://github.com/rustsec/rustsec/tree/main/cargo-audit).
+# Consumed by the `cargo audit` CI gate.
+
+[advisories]
+ignore = [
+    # rsa: Marvin Attack — potential key recovery via timing side-channels.
+    # Pulled transitively by `pgp` (rPGP). Our PGP trust backend only VERIFIES
+    # detached signatures using PUBLIC keys; the Marvin attack targets RSA
+    # PRIVATE-key operations (decryption/signing), which we never perform, so
+    # practical exposure is negligible. No fixed `rsa` release exists. Revisit
+    # on any `pgp`/`rsa` bump. See docs/sigstore-security-review.md.
+    "RUSTSEC-2023-0071",
+]

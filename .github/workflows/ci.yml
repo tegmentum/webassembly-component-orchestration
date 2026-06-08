@@ -74,6 +74,28 @@ jobs:
       - name: Build placeholder component
         run: ./scripts/build-placeholder.sh
 
+  cargo-audit:
+    name: cargo audit (advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # cargo audit only reads Cargo.lock + the RustSec advisory DB; it does
+      # not fetch crate sources, so no private-dependency token is needed.
+      # Accepted/no-fix advisories are documented in .cargo/audit.toml.
+      - name: Install pinned Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        run: cargo audit
+
   composectl-validation:
     name: composectl plan validation
     runs-on: ubuntu-latest

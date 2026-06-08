@@ -16,10 +16,20 @@ jobs:
       # git-fetch-with-cli, so cargo's git CLI honors this token. Provide a
       # repo:read PAT as the TEGMENTUM_CI_TOKEN secret.
       - name: Authenticate private git dependencies
+        env:
+          TOKEN: ${{ secrets.TEGMENTUM_CI_TOKEN }}
         run: |
-          git config --global \
-            url."https://x-access-token:${{ secrets.TEGMENTUM_CI_TOKEN }}@github.com/".insteadOf \
-            "https://github.com/"
+          # Only rewrite to token auth when a token is provided. The git
+          # dependencies (tegmentum/secure-log, tegmentum/wasm-tools) are
+          # public, so a tokenless run fetches them anonymously; an empty
+          # token would otherwise turn anonymous reads into failed auth.
+          if [ -n "$TOKEN" ]; then
+            git config --global \
+              url."https://x-access-token:${TOKEN}@github.com/".insteadOf \
+              "https://github.com/"
+          else
+            echo "No TEGMENTUM_CI_TOKEN set; fetching git dependencies anonymously."
+          fi
       - name: Detect Cargo workspaces
         id: cargo
         run: |
@@ -63,11 +73,21 @@ jobs:
           # hello-http (wasi:http) for the http-server feature test; its WIT
           # deps are vendored, so this builds offline.
           (cd examples/hello-http && cargo build --release --target wasm32-wasip2)
+      # Linking the host binaries (wasmtime + aws-lc + reqwest + sigstore +
+      # pgp) is memory-heavy; debug info dominates the linker's footprint and
+      # several test binaries link in parallel. Drop debuginfo in CI so the
+      # link fits on memory-constrained runners (GitHub ~7 GiB; local act).
       - name: cargo test
         if: steps.cargo.outputs.found == 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: cargo test --all
       - name: cargo test (http-server feature)
         if: steps.cargo.outputs.found == 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: cargo test -p compose-host-wasmtime --features http-server --test http_exec
       - name: Install wasm-tools
         run: cargo install wasm-tools
@@ -102,10 +122,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Authenticate private git dependencies
+        env:
+          TOKEN: ${{ secrets.TEGMENTUM_CI_TOKEN }}
         run: |
-          git config --global \
-            url."https://x-access-token:${{ secrets.TEGMENTUM_CI_TOKEN }}@github.com/".insteadOf \
-            "https://github.com/"
+          # Only rewrite to token auth when a token is provided. The git
+          # dependencies (tegmentum/secure-log, tegmentum/wasm-tools) are
+          # public, so a tokenless run fetches them anonymously; an empty
+          # token would otherwise turn anonymous reads into failed auth.
+          if [ -n "$TOKEN" ]; then
+            git config --global \
+              url."https://x-access-token:${TOKEN}@github.com/".insteadOf \
+              "https://github.com/"
+          else
+            echo "No TEGMENTUM_CI_TOKEN set; fetching git dependencies anonymously."
+          fi
       - name: Detect composectl manifest
         id: ctl
         run: |

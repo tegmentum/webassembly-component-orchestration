@@ -164,14 +164,14 @@ pub struct TenantLimits {
 ### Current Implementation
 
 1. **Fuzzing Coverage**
-   - Plan parser not comprehensively fuzzed
-   - WIT canonicalization needs fuzzing
-   - Status: Identified, not yet addressed
+   - Plan CBOR parser fuzzed via `cargo fuzz` (libFuzzer), target `plan_parse`
+   - WIT canonicalization still needs fuzzing
+   - Status: Plan parser covered (1.25M+ execs clean); WIT canon pending
 
 2. **Performance Profiling**
-   - No formal benchmarking suite
+   - Criterion benchmarks for the hot plan paths (`cargo bench -p compose-core`)
    - Cache optimization opportunities remain
-   - Status: Informal testing only
+   - Status: Benchmark suite in place; broader profiling informal
 
 3. **Edge Cases**
    - Some resource exhaustion scenarios may exist
@@ -180,8 +180,11 @@ pub struct TenantLimits {
 
 ### Future Work
 
-- [ ] Comprehensive fuzzing campaign (AFL, libFuzzer)
-- [ ] Formal performance benchmarking suite
+- [x] Fuzzing — plan CBOR parser fuzzed via `cargo fuzz` (libFuzzer):
+      `libs/compose-core/fuzz`, target `plan_parse` (`cargo fuzz run plan_parse`).
+      Remaining: WIT canonicalization fuzzing.
+- [x] Performance benchmarking suite — criterion benches for the hot plan
+      paths (encode/decode/digest/validate): `cargo bench -p compose-core`.
 - [ ] Advanced DOS protection (rate limiting)
 - [ ] Side-channel resistance analysis
 - [ ] Formal verification of critical paths

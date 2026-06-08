@@ -43,3 +43,9 @@ tempfile = "3"
 # Tests use the in-memory SQLite store; native + dev-only, so it does
 # not affect the wasm32-wasip2 library build.
 secure-log-sqlite = { git = "https://github.com/tegmentum/secure-log.git", rev = "8ffec9c354280409b6a532df27b4e721701eb608" }
+# Benchmarks only (dev-dep, native): plan encode/decode/digest/validate.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "plan"
+harness = false

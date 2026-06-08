@@ -1,0 +1,23 @@
+[package]
+name = "compose-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+compose-core = { path = ".." }
+
+[[bin]]
+name = "plan_parse"
+path = "fuzz_targets/plan_parse.rs"
+test = false
+doc = false
+bench = false
+
+# Detach from the parent workspace (cargo-fuzz convention): the fuzz crate
+# builds with sanitizers and its own profile, independent of the main build.
+[workspace]

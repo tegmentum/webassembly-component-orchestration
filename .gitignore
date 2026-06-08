@@ -10,6 +10,10 @@ Cargo.lock
 .compose/
 *.wasm
 *.wat
+# ...but this placeholder component source IS version-controlled: the CI
+# "Build placeholder component" step compiles it with wasm-tools, so a clean
+# checkout must contain it.
+!hosts/wasmtime/resources/placeholder.component.wat
 
 # IDE
 .vscode/

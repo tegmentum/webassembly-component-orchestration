@@ -13,5 +13,8 @@ if ! command -v wasm-tools >/dev/null 2>&1; then
 fi
 
 mkdir -p "$OUT_DIR"
-wasm-tools component new "$WAT" -o "$OUT_FILE"
+# The source is already a full component in WAT; assemble it to a binary
+# component with `parse` (not `component new`, which wraps a *core* module).
+wasm-tools parse "$WAT" -o "$OUT_FILE"
+wasm-tools validate "$OUT_FILE"
 echo "wrote $OUT_FILE"

@@ -41,9 +41,11 @@ fn handle_plan(host: &CompositorHost, action: PlanAction, format: &OutputFormat)
             // Read and parse plan
             let plan_data = read_plan(&plan)?;
 
-            // Validate using host
+            // Validate the plan file's structure. Blob availability is an
+            // emit/exec concern, so a standalone plan file is linted without
+            // requiring its component artifacts to be staged locally.
             let validator = host.plan_validator();
-            validator.validate(&plan_data)?;
+            validator.validate_structure(&plan_data)?;
 
             output(format, "Plan is valid", &plan_data)?;
             Ok(())

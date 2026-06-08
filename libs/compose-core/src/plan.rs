@@ -77,6 +77,33 @@ impl PlanValidator {
         Ok(())
     }
 
+    /// Validate a plan *file*'s structure without requiring its component
+    /// blobs to be staged: schema, canonical component order, graph, bindings,
+    /// and linkage. Blob availability (phase 2 of [`validate`]) is an
+    /// emit/exec-time concern — a plan file can be linted on its own. Used by
+    /// `composectl plan validate`.
+    pub fn validate_structure(&self, plan: &PlanV1) -> Result<(), Error> {
+        self.validate_schema(plan)?;
+        self.validate_canonical_order(plan)?;
+        self.validate_graph(plan)?;
+        self.validate_bindings(plan)?;
+        self.validate_linkage(plan)?;
+        Ok(())
+    }
+
+    /// Components must appear in canonical (ascending `id`) order so a plan has
+    /// a single canonical encoding. Enforced for file validation; the runtime
+    /// [`validate`] path is order-agnostic (it works on already-trusted plans).
+    fn validate_canonical_order(&self, plan: &PlanV1) -> Result<(), Error> {
+        if plan.components.windows(2).any(|w| w[0].id > w[1].id) {
+            return Err(Error::new(
+                ErrorCode::PlanInvalidSchema,
+                "components are not in canonical (ascending id) order",
+            ));
+        }
+        Ok(())
+    }
+
     /// Reject plan/linkage combinations the runtime can't honor. Runtime
     /// linking is a non-deterministic operation, so it is incompatible
     /// with strict determinism — fail fast here rather than at exec.

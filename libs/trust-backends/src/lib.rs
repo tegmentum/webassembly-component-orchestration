@@ -17,6 +17,10 @@ use compose_core::types::{Digest, Error, ErrorCode, VerificationMetadata};
 use pgp::composed::Deserializable;
 use std::path::PathBuf;
 
+/// Upper bound on an accepted Sigstore bundle (JSON). Real bundles are a few
+/// KB; this caps work spent parsing a hostile payload. 1 MiB is generous.
+const MAX_BUNDLE_BYTES: usize = 1 << 20;
+
 /// A required signing identity: the certificate SAN identity and the OIDC
 /// issuer that must have minted it. Verification accepts an artifact only if
 /// one configured identity matches the bundle's certificate.
@@ -162,7 +166,18 @@ impl TrustBackend for SigStoreTrustBackend {
             ));
         }
 
-        // The signature payload is a Sigstore bundle (JSON).
+        // The signature payload is a Sigstore bundle (JSON). Bound its size
+        // before parsing untrusted JSON — real bundles are a few KB; this caps
+        // memory/CPU spent on a hostile blob.
+        if signature.len() > MAX_BUNDLE_BYTES {
+            return Err(Error::new(
+                ErrorCode::TrustSignatureInvalid,
+                format!(
+                    "sigstore bundle too large: {} bytes (max {MAX_BUNDLE_BYTES})",
+                    signature.len()
+                ),
+            ));
+        }
         let bundle_json = std::str::from_utf8(signature).map_err(|_| {
             Error::new(
                 ErrorCode::TrustSignatureInvalid,
@@ -175,6 +190,28 @@ impl TrustBackend for SigStoreTrustBackend {
                 format!("invalid sigstore bundle: {e:?}"),
             )
         })?;
+
+        // Defense in depth: `sigstore-verify` only cryptographically checks a
+        // MessageSignature via hashedrekord transparency-log entries, and bundle
+        // validation does not enforce that the entry kind matches the content
+        // type. A MessageSignature bundle carrying no hashedrekord entry would
+        // therefore skip the signature check, so reject it outright. (Legitimate
+        // cosign/Fulcio message-signature bundles always include one.)
+        if matches!(
+            bundle.content,
+            sigstore_verify::types::SignatureContent::MessageSignature(_)
+        ) && !bundle
+            .verification_material
+            .tlog_entries
+            .iter()
+            .any(|e| e.kind_version.kind == "hashedrekord")
+        {
+            return Err(Error::new(
+                ErrorCode::TrustSignatureInvalid,
+                "message-signature bundle has no hashedrekord transparency-log entry; \
+                 its signature would not be verified",
+            ));
+        }
 
         // Try each policy (identity); accept on the first that verifies.
         let mut last_err: Option<String> = None;

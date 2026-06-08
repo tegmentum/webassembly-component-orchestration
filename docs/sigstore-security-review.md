@@ -41,9 +41,35 @@ malicious artifact? — is **no** for the message-signature (cosign blob) path:
 authenticated by Rekor's inclusion proof), requires the bundle cert to match the
 Rekor entry cert, and cryptographically verifies the signature over the artifact
 hash. This runs **unconditionally** (outside all `policy.*` guards), so it is
-not disabled by `skip_tlog`. For DSSE/in-toto the artifact hash is matched
-against the statement subject. Empirically confirmed by the `tampered` tests
-(rejected) and the `valid` test (accepted).
+not disabled by `skip_tlog`. For DSSE the envelope signature is verified
+unconditionally in step 7 (`sigstore_crypto::verify_signature` over the PAE),
+and for in-toto the artifact hash is matched against the statement subject.
+Empirically confirmed by the `tampered` tests (rejected) and the `valid` test
+(accepted).
+
+**Hardened (closes residual #1 below for our backend):** the message-signature
+crypto check is gated on a `hashedrekord` tlog entry, and bundle validation does
+not enforce that the entry kind matches the content type — so a `MessageSignature`
+bundle with no `hashedrekord` entry would skip its only signature check. Our
+`verify` now rejects exactly that shape before calling the crate (test
+`rejects_message_signature_without_hashedrekord_entry`).
+
+### ✅ Cache never stores a failure as success
+
+`TrustStore::verify_with_backend` calls `cache_verification` only **after**
+`backend.verify(...)?` returns `Ok` — the `?` short-circuits every failure, so
+a rejection is never cached. The cache key is the digest alone (not the
+signature/policy), which is sound here because the backend is registered once
+with a fixed identity policy; a cached "trusted" for a digest means that
+artifact already verified under that policy. (Caveat for future changes: if
+identities were reconfigured per-call, the digest-only key could mask the
+difference. Default TTL is 24h.)
+
+### ✅ Bundle size is bounded before parsing
+
+`verify` rejects a `signature` payload over `MAX_BUNDLE_BYTES` (1 MiB) before
+handing untrusted JSON to the parser (test `rejects_an_oversized_bundle`). Real
+bundles are a few KB.
 
 ### ✅ Fails closed
 
@@ -118,42 +144,54 @@ licenses`) on 2026-06-07:
   (`cargo deny check advisories` currently fails to load its DB copy on a
   CVSS-4.0 entry — a tooling bug, not our tree; `cargo audit` is authoritative.)
 
-## Residual risks for the deeper review
+## Resolved in this pass
 
-1. **Message-signature without a hashedrekord tlog entry.** The artifact
-   signature crypto for `MessageSignature` runs only inside
-   `verify_hashedrekord_entries`, which only processes `kind == "hashedrekord"`
-   entries. With `verify_tlog = true` (our default) the bundle must carry a
-   Rekor-authenticated inclusion proof, and message signatures are hashedrekord
-   in practice — but confirm a crafted bundle pairing a `MessageSignature` with
-   a non-hashedrekord (yet Rekor-valid) entry cannot skip the signature check.
-2. **Trust-root provenance & rotation.** The embedded production root is pinned
+1. **Message-signature without a hashedrekord tlog entry** — confirmed real
+   (binding is kind-gated; `validation.rs` enforces no kind↔content
+   correspondence) and **mitigated in our backend** by rejecting such bundles
+   before verification. The identity allow-list is the additional backstop.
+   Still worth an upstream report so it's fixed at the source.
+2. **Bundle as untrusted input / DoS** — `verify` now caps bundle size at 1 MiB
+   before parsing. (Parser robustness to *within-bound* pathological JSON is
+   still upstream's concern.)
+3. **Time handling** — confirmed fail-closed: `determine_validation_time`
+   *requires* a verified time source (TSA timestamp or a V1 integrated time with
+   an inclusion-promise/SET) and errors otherwise; clock-skew tolerance is 60s.
+4. **Cache safety** — confirmed failures are never cached as success (see the
+   finding above).
+
+## Still open for the deeper review
+
+1. **Trust-root provenance & rotation.** The embedded production root is pinned
    to the `sigstore-trust-root` crate version. Verify its bytes match the
    official Sigstore TUF root, and define an update cadence (crate bump) for
    root rotations. Treat a custom `sigstore_trust_root` file as security input.
-3. **Bundle as untrusted input / DoS.** `Bundle::from_json` parses an
-   attacker-controlled JSON blob. Confirm size bounds upstream and the parser's
-   resilience to pathological inputs.
-4. **Third-party crypto.** `sigstore-verify` (and `x509-cert`, `p256`, Rekor
-   Merkle code) carry the actual security weight. Pin versions, track
-   advisories (`cargo audit`/`cargo deny`), and re-review on upgrade.
-5. **Time handling.** Verification uses the tlog integrated time for cert
-   validity; confirm clock-skew tolerance (default 60s) and that a missing
-   integrated time can't weaken the validity-window check.
+2. **Third-party crypto + version pinning.** `sigstore-verify` (and `x509-cert`,
+   `p256`, `aws-lc-rs`, Rekor Merkle code) carry the security weight. `Cargo.lock`
+   pins exact versions today; decide whether to also tighten the version reqs and
+   wire `cargo audit` into CI, re-reviewing on upgrade.
+3. **Unconditional `reqwest`/`hyper`/`tokio` surface.** Decide whether it's
+   acceptable; file an upstream offline-mode request for `sigstore-rekor` or
+   vendor/patch (no feature removes it today).
+4. **Identity allow-list as the primary control.** The empty-list "accept any
+   Fulcio identity" default is hardened with a warning but not closed; production
+   deployments must set `sigstore_identities`. Confirm exact-match semantics
+   against the real Fulcio SAN/issuer values operators will configure (esp.
+   GitHub Actions `…/.github/workflows/…@ref`).
 
 ## Checklist to hand the billed `/code-review ultra`
 
-- [ ] Re-derive the artifact-binding argument for **all** bundle kinds (msg-sig,
-      DSSE, in-toto), including the residual #1 above.
+- [x] Re-derive the artifact-binding argument for all bundle kinds (msg-sig,
+      DSSE, in-toto) — done above; msg-sig gap mitigated in our backend.
 - [ ] Confirm exact-match identity semantics vs. real Fulcio SAN/issuer values.
 - [ ] Verify embedded trusted-root bytes against the official Sigstore root;
       decide rotation policy.
-- [ ] Fuzz `Bundle::from_json` / verify with malformed & oversized bundles.
+- [x] Bound + reject malformed/oversized bundles (size cap + tests).
 - [x] `cargo audit` on the sigstore dep tree (see Dependency surface);
-      `cargo deny` advisory DB needs a newer copy. Still TODO: pin versions.
+      `cargo deny` advisory DB needs a newer copy. Still TODO: tighten version
+      pins / wire `cargo audit` into CI.
 - [ ] Decide whether the unconditionally-linked `reqwest`/`hyper`/`tokio`
       surface is acceptable; file an upstream offline-mode request for
       `sigstore-rekor` or vendor/patch.
-- [ ] Confirm fail-closed under every error path (no `Ok` leak on partial
-      verification) and that caching (`TrustStore`) never caches a failure as
-      success.
+- [x] Confirm fail-closed under every error path and that caching never caches a
+      failure as success.

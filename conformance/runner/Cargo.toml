@@ -4,6 +4,9 @@ version = "0.0.1"
 edition = "2021"
 description = "Conformance test suite for compositional WebAssembly system"
 publish = false
+# Disambiguate `cargo run -p conformance-runner` (the crate also ships the
+# `conformance` and `gen-vectors` helper bins).
+default-run = "conformance-runner"
 
 [lib]
 name = "conformance_runner"

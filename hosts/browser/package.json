@@ -1,0 +1,20 @@
+{
+  "name": "@compose/host-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser host for the compose:dynlink orchestration framework: a jco-transpiled guest resolves a shared provider through a JS-implemented compose:dynlink/linker, running under WASI Preview 2 via @tegmentum/wasi-polyfill in a headless browser.",
+  "type": "module",
+  "scripts": {
+    "transpile": "node scripts/transpile.mjs",
+    "test": "playwright test",
+    "test:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "@tegmentum/wasi-polyfill": "file:../../../wasi-polyfill"
+  },
+  "devDependencies": {
+    "@bytecodealliance/jco": "^1.15.0",
+    "@playwright/test": "^1.49.0",
+    "vite": "^5.4.0"
+  }
+}

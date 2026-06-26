@@ -11,8 +11,8 @@ publish = false
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-wasmtime = { version = "45.0.1", features = ["component-model"] }
-wasmtime-wasi = "45.0.1"
+wasmtime = { version = "46.0.1", features = ["component-model"] }
+wasmtime-wasi = "46.0.1"
 wat = "1"
 
 # Portable orchestrator core (no wasmtime dependency)
@@ -36,7 +36,7 @@ hex = "0.4"
 
 # HTTP execution (serve-http / handle-http) — drives wasi:http components.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "macros"], optional = true }
-wasmtime-wasi-http = { version = "45.0.1", optional = true }
+wasmtime-wasi-http = { version = "46.0.1", optional = true }
 hyper = { version = "1", features = ["server", "http1"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 http-body-util = { version = "0.1", optional = true }

@@ -75,6 +75,54 @@ impl<B: BlobBackend> CompileCache<B> {
         compute_digest(&material)
     }
 
+    /// Wrap `artifact` as a self-authenticating, framed blob
+    /// (`hmac_tag(32) || artifact`) bound to the `(component_digest,
+    /// engine_version, target)` triple, without touching the backend.
+    ///
+    /// For artifacts a host stores at a path it already manages (e.g. a
+    /// `.cwasm` file next to the source `.wasm`): `seal` on write, [`open`] on
+    /// read. The HMAC binds the bytes to both the host secret and the engine
+    /// triple, so a tampered or foreign-engine file fails to open.
+    ///
+    /// [`open`]: Self::open
+    pub fn seal(
+        &self,
+        component_digest: &Digest,
+        engine_version: &str,
+        target: &str,
+        artifact: &[u8],
+    ) -> Vec<u8> {
+        let key = Self::cache_key(component_digest, engine_version, target);
+        let tag = self.tag(&key, artifact);
+        let mut framed = Vec::with_capacity(TAG_LEN + artifact.len());
+        framed.extend_from_slice(&tag);
+        framed.extend_from_slice(artifact);
+        framed
+    }
+
+    /// Verify and unwrap a blob produced by [`seal`](Self::seal). Returns
+    /// `None` (never the bytes) when the frame is malformed or the HMAC does
+    /// not authenticate for these inputs — so a caller can safely fall back to
+    /// recompiling rather than deserializing untrusted machine code.
+    pub fn open(
+        &self,
+        component_digest: &Digest,
+        engine_version: &str,
+        target: &str,
+        framed: &[u8],
+    ) -> Option<Vec<u8>> {
+        if framed.len() < TAG_LEN {
+            return None;
+        }
+        let key = Self::cache_key(component_digest, engine_version, target);
+        let (tag, artifact) = framed.split_at(TAG_LEN);
+        if self.verify(&key, artifact, tag) {
+            Some(artifact.to_vec())
+        } else {
+            None
+        }
+    }
+
     /// Authenticate `artifact` under `key` and store it, returning the cache
     /// key. The stored blob is `hmac_tag(32 bytes) || artifact`.
     pub fn store(
@@ -271,6 +319,30 @@ mod tests {
         // Read with a different secret: HMAC must fail -> None (no bytes leak).
         let reader = CompileCache::new(backend, b"secret-B".to_vec());
         assert!(reader.load(&component, "engine-1", "t").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_seal_open_roundtrip_and_tamper() {
+        let cache = store();
+        let component = compute_digest(b"comp");
+        let art = b"precompiled bytes";
+
+        let sealed = cache.seal(&component, "engine-1", "t", art);
+        assert_eq!(
+            cache.open(&component, "engine-1", "t", &sealed).as_deref(),
+            Some(&art[..])
+        );
+
+        // Wrong engine triple -> no open.
+        assert!(cache.open(&component, "engine-2", "t", &sealed).is_none());
+
+        // Tampered payload -> no open.
+        let mut bad = sealed.clone();
+        *bad.last_mut().unwrap() ^= 0xFF;
+        assert!(cache.open(&component, "engine-1", "t", &bad).is_none());
+
+        // Too short -> no open.
+        assert!(cache.open(&component, "engine-1", "t", b"short").is_none());
     }
 
     #[test]

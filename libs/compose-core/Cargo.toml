@@ -20,6 +20,10 @@ chrono = "0.4"
 # Hashing for CAS and digests
 sha2 = "0.10"
 hex = "0.4"
+# HMAC-SHA256 for the trust-gated compile cache. Pure-Rust, wasm32-wasip2
+# clean (no runtime, no sqlite) — keeps compose-core's no-wasmtime/no-sqlite
+# guarantee intact.
+hmac = "0.12"
 
 # Cryptographically secure entropy for secret bearer tokens. 0.3 has a
 # first-class wasm32-wasip2 backend (wasi:random), so compose-core stays

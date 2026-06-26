@@ -11,14 +11,57 @@ use std::fs;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
-/// Content-addressed blob storage using file system
+/// Content-addressed blob storage backend.
+///
+/// The single storage trait every CAS backend in the system implements.
+/// Addressing is SHA-256 (`compute_digest`) — the Phase-1 `content_digest`.
+/// Two backends implement this trait:
+///
+/// * [`FsBlobStore`] — the file-system store in this crate (used by the
+///   framework and the ducklink host).
+/// * `SqliteCasStore` — sqlink's SQLite-backed store (in the `sqlite-cas-cache`
+///   crate, backed by `sqlite-component-core` / sqlite-wasm).
+///
+/// Keeping the trait here lets `CompileCache<B: BlobBackend>` (also in this
+/// crate) stay generic over the backend while compose-core remains
+/// wasmtime-free and sqlite-free.
+pub trait BlobBackend {
+    /// Store `bytes` and return their SHA-256 digest. Idempotent: storing the
+    /// same bytes twice yields the same digest and is not an error.
+    fn put(&self, bytes: &[u8]) -> Result<Digest, Error>;
+
+    /// Retrieve a blob by digest, verifying the stored bytes re-hash to
+    /// `digest` (returns [`ErrorCode::BlobDigestMismatch`] on corruption,
+    /// [`ErrorCode::BlobNotFound`] when absent).
+    fn get(&self, digest: &Digest) -> Result<Vec<u8>, Error>;
+
+    /// Whether a blob with this digest is present.
+    fn has(&self, digest: &Digest) -> bool;
+
+    /// Size in bytes of a stored blob, if present.
+    fn size(&self, digest: &Digest) -> Option<u64>;
+
+    /// Delete a blob by digest.
+    fn delete(&self, digest: &Digest) -> Result<(), Error>;
+
+    /// List the digests of every stored blob.
+    fn list_all(&self) -> Vec<Digest>;
+}
+
+/// Content-addressed blob storage using the file system.
+///
+/// The framework's reference [`BlobBackend`]. Historically named `BlobStore`;
+/// that name is preserved as a type alias for back-compat.
 #[derive(Debug, Clone)]
-pub struct BlobStore {
+pub struct FsBlobStore {
     root: PathBuf,
     max_size: u64,
 }
 
-impl BlobStore {
+/// Back-compat alias for [`FsBlobStore`], the file-system [`BlobBackend`].
+pub type BlobStore = FsBlobStore;
+
+impl FsBlobStore {
     /// Create a new blob store at the given path
     pub fn new(root: PathBuf, max_size: u64) -> Result<Self> {
         fs::create_dir_all(&root)?;
@@ -168,6 +211,32 @@ impl BlobStore {
     }
 }
 
+impl BlobBackend for FsBlobStore {
+    fn put(&self, bytes: &[u8]) -> Result<Digest, Error> {
+        FsBlobStore::put(self, bytes)
+    }
+
+    fn get(&self, digest: &Digest) -> Result<Vec<u8>, Error> {
+        FsBlobStore::get(self, digest)
+    }
+
+    fn has(&self, digest: &Digest) -> bool {
+        FsBlobStore::has(self, digest)
+    }
+
+    fn size(&self, digest: &Digest) -> Option<u64> {
+        FsBlobStore::size(self, digest)
+    }
+
+    fn delete(&self, digest: &Digest) -> Result<(), Error> {
+        FsBlobStore::delete(self, digest)
+    }
+
+    fn list_all(&self) -> Vec<Digest> {
+        FsBlobStore::list_all(self)
+    }
+}
+
 /// Compute SHA-256 digest of bytes
 pub fn compute_digest(bytes: &[u8]) -> Digest {
     let mut hasher = Sha256::new();
@@ -236,5 +305,22 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert!(all.contains(&digest1));
         assert!(all.contains(&digest2));
+    }
+
+    #[test]
+    fn test_blob_backend_trait_object() {
+        let dir = tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
+
+        // Exercise FsBlobStore through the BlobBackend trait surface.
+        let backend: &dyn BlobBackend = &store;
+        let data = b"trait dispatch";
+        let digest = backend.put(data).unwrap();
+        assert!(backend.has(&digest));
+        assert_eq!(backend.size(&digest), Some(data.len() as u64));
+        assert_eq!(backend.get(&digest).unwrap(), data);
+        assert_eq!(backend.list_all(), vec![digest.clone()]);
+        backend.delete(&digest).unwrap();
+        assert!(!backend.has(&digest));
     }
 }

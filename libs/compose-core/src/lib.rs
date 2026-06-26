@@ -11,6 +11,7 @@
 pub mod attest;
 pub mod audit;
 pub mod blobs;
+pub mod compile_cache;
 pub mod emit;
 pub mod events;
 pub mod host;
@@ -24,7 +25,8 @@ pub mod types;
 
 pub use attest::AttestationService;
 pub use audit::{AuditLogger, SharedSecureLog};
-pub use blobs::BlobStore;
+pub use blobs::{BlobBackend, BlobStore, FsBlobStore};
+pub use compile_cache::CompileCache;
 // Re-export the secure-log surface host crates need to construct a
 // backend without taking their own direct dependency on the crate.
 pub use events::EventCollector;

@@ -505,6 +505,7 @@ pub fn sandbox_engine() -> Engine {
         .get_or_init(|| {
             let mut config = wasmtime::Config::new();
             config.wasm_component_model(true);
+            config.wasm_exceptions(true);
             config.consume_fuel(true);
             config.epoch_interruption(true);
             // This config is static and valid, so construction cannot fail.
@@ -1036,6 +1037,7 @@ mod tests {
 
         let mut config = wasmtime::Config::new();
         config.wasm_component_model(true);
+        config.wasm_exceptions(true);
         let engine = Engine::new(&config).expect("engine");
         let state = DynState::new(engine, blobs, trust, determinism, granted).expect("dyn state");
         (state, digest, tmp)
@@ -1046,6 +1048,7 @@ mod tests {
     fn linker_registration_type_checks() {
         let mut config = wasmtime::Config::new();
         config.wasm_component_model(true);
+        config.wasm_exceptions(true);
         let engine = Engine::new(&config).unwrap();
         let mut linker = Linker::<DynState>::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker).expect("WASI registers");
@@ -1166,6 +1169,7 @@ mod tests {
 
         let mut config = wasmtime::Config::new();
         config.wasm_component_model(true);
+        config.wasm_exceptions(true);
         let engine = Engine::new(&config).unwrap();
 
         let out = run_cli_with_endpoint(&engine, &consumer, &provider, &[], &[]).expect("run");
@@ -1196,6 +1200,7 @@ mod tests {
         };
         let mut config = wasmtime::Config::new();
         config.wasm_component_model(true);
+        config.wasm_exceptions(true);
         let engine = Engine::new(&config).unwrap();
 
         // Provider slot given a component that doesn't export endpoint.

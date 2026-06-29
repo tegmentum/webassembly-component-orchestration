@@ -111,6 +111,12 @@ impl CompositorHost {
         // Configure Wasmtime engine
         let mut wasmtime_config = wasmtime::Config::new();
         wasmtime_config.wasm_component_model(true);
+        // wasm-exceptions: required by guests built with wasi-sdk's
+        // setjmp/longjmp emulation (which lowers to wasm-EH exception
+        // refs). Pylon's python.wasm hits this via the
+        // `-mllvm -wasm-enable-sjlj` build flag — without this, host
+        // load fails with "exception refs not supported".
+        wasmtime_config.wasm_exceptions(true);
         let engine = Engine::new(&wasmtime_config)?;
 
         // The host satisfies the orchestrator's clock capability using a

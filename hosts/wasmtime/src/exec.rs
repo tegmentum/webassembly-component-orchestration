@@ -16,7 +16,35 @@ use wasmtime::{
 };
 use wasmtime_wasi::p2::bindings::sync::Command;
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{DirPerms, FilePerms, ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+/// A host-to-guest filesystem preopen for `run_cli_with_mounts`. Mirrors
+/// `wasmtime run --dir HOST::GUEST` semantics: the host directory is opened
+/// and made available to the wasm under the guest-side path. Permissions
+/// default to all but can be tightened (e.g. for read-only mounts).
+#[derive(Debug, Clone)]
+pub struct Mount {
+    /// Host filesystem path that backs the preopen.
+    pub host_path: std::path::PathBuf,
+    /// Guest-visible directory name (e.g. "/", "/site-packages").
+    pub guest_path: String,
+    /// Directory operations permitted on the mount.
+    pub dir_perms: DirPerms,
+    /// File operations permitted within the mount.
+    pub file_perms: FilePerms,
+}
+
+impl Mount {
+    /// Convenience: a read/write mount at the given guest path.
+    pub fn rw(host_path: impl Into<std::path::PathBuf>, guest_path: impl Into<String>) -> Self {
+        Self {
+            host_path: host_path.into(),
+            guest_path: guest_path.into(),
+            dir_perms: DirPerms::all(),
+            file_perms: FilePerms::all(),
+        }
+    }
+}
 
 /// Fold the set of providers linked at runtime into an exec-key hasher.
 ///
@@ -94,13 +122,36 @@ impl ExecHandler {
     pub fn run_cli(
         &self,
         plan: &PlanV1,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<ExecResult, Error> {
+        self.run_cli_with_mounts(plan, args, env, Vec::new())
+    }
+
+    /// Execute plan as a CLI application, with host filesystem preopens.
+    ///
+    /// Mirrors `wasmtime run --dir` — each Mount maps a host path to a
+    /// guest-visible directory. Required for guests like pylon's python.wasm
+    /// that need a real stdlib + sysconfig + site-packages tree under `/`.
+    /// `Linkage::Runtime` plans currently ignore mounts (the dynlink exec
+    /// path doesn't thread them through yet — separate change).
+    pub fn run_cli_with_mounts(
+        &self,
+        plan: &PlanV1,
         _args: Vec<String>,
         _env: Vec<(String, String)>,
+        mounts: Vec<Mount>,
     ) -> Result<ExecResult, Error> {
         // Runtime-linked plans (flavor A) take a separate path: the root
         // consumer's endpoint import is bound to a provider at exec time
         // rather than statically composed.
         if plan.linkage == compose_core::types::Linkage::Runtime {
+            if !mounts.is_empty() {
+                self.events.warn(
+                    "mounts ignored for runtime-linked plan",
+                    Some("Linkage::Runtime exec path does not thread mounts yet".to_string()),
+                );
+            }
             return self.run_cli_runtime_linked(plan, _args, _env);
         }
 
@@ -179,7 +230,7 @@ impl ExecHandler {
         self.events.info("executing component with WASI", None);
 
         let result = self
-            .execute_wasi_command(&component, _args, _env, &exec_key)
+            .execute_wasi_command(&component, _args, _env, mounts, &exec_key)
             .map_err(|e| {
                 let err = Error::new(ErrorCode::ExecTrap, format!("execution failed: {}", e));
                 // Log failure
@@ -682,6 +733,7 @@ impl ExecHandler {
         component: &Component,
         args: Vec<String>,
         env: Vec<(String, String)>,
+        mounts: Vec<Mount>,
         exec_key: &Digest,
     ) -> Result<ExecResult, Error> {
         // Create a linker with WASI support
@@ -699,12 +751,33 @@ impl ExecHandler {
         let stdout_clone = stdout.clone();
         let stderr_clone = stderr.clone();
 
-        // Build WASI context with args, env, and captured I/O
+        // Build WASI context with args, env, mounts, and captured I/O
         let mut builder = WasiCtxBuilder::new();
         builder.args(&args);
 
         for (key, value) in env {
             builder.env(&key, &value);
+        }
+
+        for mount in &mounts {
+            builder
+                .preopened_dir(
+                    &mount.host_path,
+                    &mount.guest_path,
+                    mount.dir_perms,
+                    mount.file_perms,
+                )
+                .map_err(|e| {
+                    Error::new(
+                        ErrorCode::InternalError,
+                        format!(
+                            "failed to preopen {} as {}: {}",
+                            mount.host_path.display(),
+                            mount.guest_path,
+                            e
+                        ),
+                    )
+                })?;
         }
 
         builder

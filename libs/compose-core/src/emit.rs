@@ -244,14 +244,132 @@ impl EmitHandler {
         }
     }
 
-    /// Compose using wac-graph's `plug` primitive — the same algorithm
-    /// `wac plug` (the CLI) uses. Iterates each plug's exports, matches
-    /// to socket imports by interface name (with semver fallback), and
-    /// wires them via `set_instantiation_argument`. Type compatibility
-    /// is checked at the WIT level (`SubtypeChecker::is_subtype`),
-    /// which preserves resource type identity across boundaries — the
-    /// thing wasm-compose's Config-driven wiring gets wrong.
+    /// Compose using the `wac` CLI as a subprocess.
+    ///
+    /// Why not the library: `wac-graph::plug` handles plug→socket wiring
+    /// correctly but doesn't iterate plug→plug edges. A plan with
+    /// `arrow-csv-typed` (which imports zstd:compression/simple) and
+    /// `zstd-wasm` (which exports it) leaves the arrow plug's zstd
+    /// import unwired — and the encoder auto-promotes that to a
+    /// component-level import of the composed output. wasmtime then
+    /// traps at instantiation with "matching implementation was not
+    /// found in the linker" because the host doesn't satisfy it.
+    ///
+    /// The `wac` CLI tool resolves this through multi-pass plug
+    /// processing — it iterates until no plug's imports remain
+    /// satisfiable by other plugs' exports. The cleanest way to share
+    /// that logic without forking wac-graph is to invoke `wac plug` as
+    /// a subprocess. Yes, it's an exec boundary; the runtime cost is
+    /// negligible vs the composition itself (linker is the bottleneck).
+    ///
+    /// Falls back to the library implementation if `wac` is not on
+    /// PATH — useful for tests / environments where we want
+    /// deterministic behavior even though it doesn't handle inter-plug
+    /// wiring.
     fn compose_with_wac_plug(
+        &self,
+        plan: &PlanV1,
+        component_map: &HashMap<String, Vec<u8>>,
+    ) -> Result<Vec<u8>, Error> {
+        // Prefer the wac CLI if it's available — it handles inter-plug
+        // wiring that the wac-graph library doesn't yet.
+        if std::process::Command::new("wac").arg("--version").output().is_ok() {
+            return self.compose_with_wac_cli(plan, component_map);
+        }
+        self.compose_with_wac_graph(plan, component_map)
+    }
+
+    fn compose_with_wac_cli(
+        &self,
+        plan: &PlanV1,
+        component_map: &HashMap<String, Vec<u8>>,
+    ) -> Result<Vec<u8>, Error> {
+        use std::process::Command;
+
+        let work = StagingDir::new(&self.cache_dir)?;
+
+        // Stage socket
+        let socket_bytes = component_map.get(&plan.root).ok_or_else(|| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("root component {} not found", plan.root),
+            )
+        })?;
+        let socket_path = work.path.join("socket.wasm");
+        std::fs::write(&socket_path, socket_bytes).map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("stage socket: {}", e),
+            )
+        })?;
+
+        // Stage plugs (one file per unique provider; same dedup as the
+        // library path).
+        let mut plug_paths: Vec<PathBuf> = Vec::new();
+        let mut staged: HashSet<String> = HashSet::new();
+        for binding in &plan.bindings {
+            if !staged.insert(binding.provider_id.clone()) || binding.provider_id == plan.root {
+                continue;
+            }
+            let dep_bytes = component_map.get(&binding.provider_id).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!("provider component {} not found", binding.provider_id),
+                )
+            })?;
+            let dep_path = work.path.join(format!("plug_{}.wasm", binding.provider_id));
+            std::fs::write(&dep_path, dep_bytes).map_err(|e| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!("stage plug {}: {}", binding.provider_id, e),
+                )
+            })?;
+            plug_paths.push(dep_path);
+        }
+
+        let out_path = work.path.join("composed.wasm");
+        let mut cmd = Command::new("wac");
+        cmd.arg("plug").arg(&socket_path);
+        for p in &plug_paths {
+            cmd.arg("--plug").arg(p);
+        }
+        cmd.arg("-o").arg(&out_path);
+
+        self.events.info(
+            "invoking wac plug subprocess",
+            Some(format!("plugs: {}", plug_paths.len())),
+        );
+
+        let out = cmd.output().map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("failed to spawn `wac plug`: {}", e),
+            )
+        })?;
+        if !out.status.success() {
+            return Err(Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!(
+                    "wac plug failed (exit {}): {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            ));
+        }
+        let bytes = std::fs::read(&out_path).map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("read composed output: {}", e),
+            )
+        })?;
+        self.events.info(
+            "wac plug subprocess complete",
+            Some(format!("output size: {} bytes", bytes.len())),
+        );
+        Ok(bytes)
+    }
+
+    fn compose_with_wac_graph(
         &self,
         plan: &PlanV1,
         component_map: &HashMap<String, Vec<u8>>,

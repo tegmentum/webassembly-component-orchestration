@@ -33,6 +33,17 @@ getrandom = "0.3"
 # WIT and component manipulation (wasm-tools, not wasmtime)
 wasm-compose = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "bytes-api" }
 wasmparser = { git = "https://github.com/tegmentum/wasm-tools.git", branch = "bytes-api" }
+# wac-graph / wac-types — WIT-level composition that preserves resource
+# type identity across plug/socket connections (wasm-compose's lower-level
+# Config-based wiring doesn't). Used by `compose_with_wac_plug` to
+# replace the previous wasm-compose-driven `compose_with_wrapper` path
+# for resource-bearing components.
+wac-graph = "0.10.1"
+wac-types = "0.10.1"
+# Direct dep on the version type used by wac-types::Package::from_bytes.
+# Already transitively present via wac-types; named explicitly so the
+# `None::<&semver::Version>` annotation can stay simple.
+semver = "1"
 
 # File system traversal for blob CAS
 walkdir = "2"

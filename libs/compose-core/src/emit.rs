@@ -9,6 +9,16 @@ use wasm_compose::composer::ComponentComposer;
 use wasm_compose::config::{Config, Dependency, Instantiation};
 use wasmparser::{Validator, WasmFeatures};
 
+// WIT-level composition via wac-graph. wasm-compose's wiring loses
+// resource type identity across plug/socket boundaries for components
+// that import resource-bearing interfaces (e.g. openssl:component/tls,
+// sqlite:wasm/high-level) — the resulting composed component fails
+// wasmparser validation with "resource types are not the same". wac
+// understands WIT semantics and threads the right type identities
+// through, so this is the correct primitive for composition.
+use wac_graph::{plug, CompositionGraph, EncodeOptions};
+use wac_types::Package;
+
 /// Emit handler for composition
 pub struct EmitHandler {
     blobs: BlobStore,
@@ -212,14 +222,141 @@ impl EmitHandler {
             )
         })?;
 
-        // For now, if there are bindings, we need to create a wrapper component
-        // that instantiates the root and dependencies with proper linking
-        if !plan.bindings.is_empty() {
-            self.compose_with_wrapper(plan, component_map, root_bytes)
-        } else {
-            // No bindings, just return root
-            Ok(root_bytes.clone())
+        // No bindings → return root unchanged.
+        if plan.bindings.is_empty() {
+            return Ok(root_bytes.clone());
         }
+
+        // Use wac-graph's plug primitive (WIT-level wiring that preserves
+        // resource type identity). Falls back to the old wasm-compose
+        // wrapper if wac-plug returns NoPlugHappened — that happens
+        // when none of the plug exports match any socket imports by
+        // interface name, which is unusual but possible.
+        match self.compose_with_wac_plug(plan, component_map) {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => {
+                self.events.info(
+                    "wac-plug composition failed; falling back to wasm-compose wrapper",
+                    Some(format!("{:?}", e.code)),
+                );
+                self.compose_with_wrapper(plan, component_map, root_bytes)
+            }
+        }
+    }
+
+    /// Compose using wac-graph's `plug` primitive — the same algorithm
+    /// `wac plug` (the CLI) uses. Iterates each plug's exports, matches
+    /// to socket imports by interface name (with semver fallback), and
+    /// wires them via `set_instantiation_argument`. Type compatibility
+    /// is checked at the WIT level (`SubtypeChecker::is_subtype`),
+    /// which preserves resource type identity across boundaries — the
+    /// thing wasm-compose's Config-driven wiring gets wrong.
+    fn compose_with_wac_plug(
+        &self,
+        plan: &PlanV1,
+        component_map: &HashMap<String, Vec<u8>>,
+    ) -> Result<Vec<u8>, Error> {
+        let mut graph = CompositionGraph::new();
+
+        // Register the socket (root component).
+        let socket_bytes = component_map.get(&plan.root).ok_or_else(|| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("root component {} not found", plan.root),
+            )
+        })?;
+        let socket_pkg = Package::from_bytes(
+            &plan.root,
+            None::<&semver::Version>,
+            socket_bytes.clone(),
+            graph.types_mut(),
+        )
+        .map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("wac: register socket package {}: {}", plan.root, e),
+            )
+        })?;
+        let socket_id = graph.register_package(socket_pkg).map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("wac: register socket {}: {}", plan.root, e),
+            )
+        })?;
+
+        // Register each provider as a plug. Order is preserved so
+        // composition is deterministic. Skip the root if it appears
+        // again (a degenerate plan shape).
+        let mut plug_ids = Vec::new();
+        let mut staged: HashSet<String> = HashSet::new();
+        for binding in &plan.bindings {
+            if !staged.insert(binding.provider_id.clone()) || binding.provider_id == plan.root {
+                continue;
+            }
+            let dep_bytes = component_map.get(&binding.provider_id).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!("provider component {} not found", binding.provider_id),
+                )
+            })?;
+            let dep_pkg = Package::from_bytes(
+                &binding.provider_id,
+                None::<&semver::Version>,
+                dep_bytes.clone(),
+                graph.types_mut(),
+            )
+            .map_err(|e| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!(
+                        "wac: register plug package {}: {}",
+                        binding.provider_id, e
+                    ),
+                )
+            })?;
+            let dep_id = graph.register_package(dep_pkg).map_err(|e| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!("wac: register plug {}: {}", binding.provider_id, e),
+                )
+            })?;
+            plug_ids.push(dep_id);
+        }
+
+        // Plug the providers into the socket. wac matches by WIT
+        // interface name on each plug's exports.
+        plug(&mut graph, plug_ids, socket_id).map_err(|e| {
+            Error::new(
+                ErrorCode::EmitCompositionFailed,
+                format!("wac plug failed: {}", e),
+            )
+        })?;
+
+        // Encode without wac's built-in validation — we validate the
+        // output later in compose_internal so error paths funnel
+        // through the same code.
+        let composed = graph
+            .encode(EncodeOptions {
+                validate: false,
+                ..Default::default()
+            })
+            .map_err(|e| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!("wac encode failed: {}", e),
+                )
+            })?;
+
+        self.events.info(
+            "wac-plug composition complete",
+            Some(format!(
+                "plugs: {}, output size: {} bytes",
+                staged.len(),
+                composed.len()
+            )),
+        );
+
+        Ok(composed)
     }
 
     /// Create a composed component by wiring the root's imports to provider

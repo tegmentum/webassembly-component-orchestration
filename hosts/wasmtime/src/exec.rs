@@ -479,6 +479,29 @@ impl ExecHandler {
         self.events
             .info("executing runtime-linked plan (guest-driven)", None);
 
+        // Hybrid path: when the plan has both `compose:dynlink/linker`-
+        // driven loading AND static cap bindings (e.g. pylon's
+        // python.wasm imports the linker for crc32c-style dynamic
+        // packages, while ALSO importing tegmentum:aead-multiplexer,
+        // openssl:component/*, sqlite:wasm/*, etc. that need static
+        // composition), compose the static portion first so those caps
+        // are satisfied, then feed the composed bytes through the
+        // dlopen path which adds the linker. Without this, dlopen
+        // traps at instantiation: "matching implementation was not
+        // found in the linker" for every non-dynlink cap import.
+        let guest_bytes_owned;
+        let guest_bytes: &[u8] = if plan.bindings.is_empty() {
+            root_bytes
+        } else {
+            self.events.info(
+                "hybrid dlopen: composing static bindings first",
+                Some(format!("bindings: {}", plan.bindings.len())),
+            );
+            let composition = self.emit.compose(plan)?;
+            guest_bytes_owned = self.blobs.get(&composition.digest)?;
+            guest_bytes_owned.as_slice()
+        };
+
         let registry: Vec<(String, Digest)> = plan
             .components
             .iter()
@@ -492,7 +515,7 @@ impl ExecHandler {
 
         let (out, resolved) = crate::dynlink::run_cli_dlopen(
             &self.engine,
-            root_bytes,
+            guest_bytes,
             &registry,
             self.blobs.clone(),
             self.trust.clone(),

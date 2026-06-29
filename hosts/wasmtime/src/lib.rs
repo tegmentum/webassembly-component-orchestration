@@ -15,6 +15,7 @@ pub mod http;
 pub mod pkcs11_backend;
 pub mod pkcs11_signer;
 
+pub use exec::Mount;
 pub use pkcs11_signer::{Pkcs11Signer, Pkcs11SignerConfig};
 
 // Re-export the portable core so downstream consumers

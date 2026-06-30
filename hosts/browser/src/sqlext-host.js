@@ -93,7 +93,7 @@ export async function runTier(tier) {
 }
 
 export async function runAllTiers() {
-  const tiers = ['scalar', 'aggregate', 'collation', 'vtab', 'hooks', 'dotcmd']
+  const tiers = ['scalar', 'aggregate', 'collation', 'vtab', 'vtab-mut', 'hooks', 'dotcmd']
   const out = {}
   for (const t of tiers) {
     out[t] = await runTier(t)

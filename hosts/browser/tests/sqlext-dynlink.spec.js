@@ -42,6 +42,10 @@ test('declarative sqlite:extension tiers load + dispatch via compose:dynlink in 
   expect(r.vtab.stdout).toContain('loaded extension: series')
   expect(r.vtab.stdout).toContain('generate_series(1,5) => [1, 2, 3, 4, 5]')
 
+  // vtab-mut (inmem): create + xUpdate INSERT + read-back.
+  expect(r['vtab-mut'].stdout).toContain('loaded extension: inmem')
+  expect(r['vtab-mut'].stdout).toContain('SELECT key,value FROM inmem => [(alpha=100), (beta=200)]')
+
   // hooks (hookcb): authorizer allow/deny + commit/wal callbacks.
   expect(r.hooks.stdout).toContain('loaded extension: hookcb')
   expect(r.hooks.stdout).toContain("authorize(read, arg1='t') => ok")
@@ -53,7 +57,7 @@ test('declarative sqlite:extension tiers load + dispatch via compose:dynlink in 
   expect(r.dotcmd.stdout).toContain('.echo hello world => ok=true exit=0 text="echo: hello world"')
 
   // every tier reconciled policy (fail-closed gate) and ran describe.
-  for (const tier of ['scalar', 'aggregate', 'collation', 'vtab', 'hooks', 'dotcmd']) {
+  for (const tier of ['scalar', 'aggregate', 'collation', 'vtab', 'vtab-mut', 'hooks', 'dotcmd']) {
     expect(r[tier].stdout).toContain('policy-check: ok=true')
     expect(r[tier].invokes).toContain('describe')
     expect(r[tier].invokes).toContain('policy-check')

@@ -141,6 +141,18 @@ fn tier_vtab_series() {
 }
 
 #[test]
+fn tier_vtab_mut_inmem() {
+    // inmem is a self-contained mutable vtab (thread-local storage, world
+    // tabular-mutating). The full mutating path runs: create -> xUpdate
+    // INSERT x2 -> read back through the cursor surface.
+    let Some((code, out, err)) = run_tier("inmem-provider.wasm", "vtab-mut") else { return };
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("loaded extension: inmem"), "{out}");
+    assert!(out.contains("INSERT (key=alpha, value=100) => rowid"), "{out}");
+    assert!(out.contains("SELECT key,value FROM inmem => [(alpha=100), (beta=200)]"), "{out}");
+}
+
+#[test]
 fn tier_hooks_hookcb() {
     // hookcb is a purpose-built declarative hook extension (no reentrant
     // host-SPI), exercising the authorizer + update/commit/wal callback

@@ -236,6 +236,153 @@ macro_rules! common_methods {
     };
 }
 
+// The scalar `call` arm — common to every shape that imports
+// scalar-function (all of them; scalar-function is in every declarative
+// world's export surface).
+macro_rules! scalar_call_arm {
+    ($payload:expr) => {{
+        let req: CallReq = decode($payload)?;
+        match sqlite::extension::scalar_function::call(req.func_id, &args_to_wit(&req.args)) {
+            Ok(v) => return encode(&from_wit(v)),
+            Err(m) => return Err(err(ErrorCode::ExecTrap, format!("scalar call: {m}"))),
+        }
+    }};
+}
+
+// The vtab READ-surface dispatch arms. Shared verbatim by the `vtab` and
+// `vtab-mut` shapes (a mutating vtab is a read vtab plus the update path),
+// so the read dispatch is written ONCE. `$vt` is the bindgen module alias.
+macro_rules! vtab_read_arms {
+    ($vt:path, $method:expr, $payload:expr, $parse_op:path) => {{
+        use $vt as vt;
+        match $method {
+            "vtab.connect" | "vtab.create" => {
+                let r: VtabConnectReq = decode($payload)?;
+                let res = if $method == "vtab.create" {
+                    vt::create(r.vtab_id, r.instance_id, &r.db_name, &r.table_name, &r.args)
+                } else {
+                    vt::connect(r.vtab_id, r.instance_id, &r.db_name, &r.table_name, &r.args)
+                };
+                return match res {
+                    Ok(schema) => encode(&schema),
+                    Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.connect: {m}"))),
+                };
+            }
+            "vtab.best-index" => {
+                let r: VtabBestIndexReq = decode($payload)?;
+                let constraints: Vec<vt::Constraint> = r
+                    .constraints
+                    .iter()
+                    .map(|c| vt::Constraint { column: c.column, op: $parse_op(&c.op), usable: c.usable })
+                    .collect();
+                let orderbys: Vec<vt::Orderby> = r
+                    .orderbys
+                    .iter()
+                    .map(|o| vt::Orderby { column: o.column, desc: o.desc })
+                    .collect();
+                let info = vt::IndexInfo { constraints, orderbys, col_used: r.col_used };
+                return match vt::best_index(r.vtab_id, r.instance_id, &info) {
+                    Ok(p) => encode(&VtabIndexPlan {
+                        constraint_usage: p
+                            .constraint_usage
+                            .iter()
+                            .map(|u| VtabConstraintUsage { argv_index: u.argv_index, omit: u.omit })
+                            .collect(),
+                        idx_num: p.idx_num,
+                        idx_str: p.idx_str,
+                        estimated_cost: p.estimated_cost,
+                        estimated_rows: p.estimated_rows,
+                        orderby_consumed: p.orderby_consumed,
+                    }),
+                    Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.best-index: {m}"))),
+                };
+            }
+            "vtab.open" => {
+                let r: VtabOpenReq = decode($payload)?;
+                return vt::open(r.vtab_id, r.instance_id, r.cursor_id)
+                    .map(|_| Vec::new())
+                    .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.open: {m}")));
+            }
+            "vtab.filter" => {
+                let r: VtabFilterReq = decode($payload)?;
+                return vt::filter(r.vtab_id, r.cursor_id, r.idx_num, r.idx_str.as_deref(), &args_to_wit(&r.args))
+                    .map(|_| Vec::new())
+                    .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.filter: {m}")));
+            }
+            "vtab.next" => {
+                let r: VtabCursorReq = decode($payload)?;
+                return vt::next(r.vtab_id, r.cursor_id)
+                    .map(|_| Vec::new())
+                    .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.next: {m}")));
+            }
+            "vtab.eof" => {
+                let r: VtabCursorReq = decode($payload)?;
+                return encode(&vt::eof(r.vtab_id, r.cursor_id));
+            }
+            "vtab.column" => {
+                let r: VtabColumnReq = decode($payload)?;
+                return match vt::column(r.vtab_id, r.cursor_id, r.col) {
+                    Ok(v) => encode(&from_wit(v)),
+                    Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.column: {m}"))),
+                };
+            }
+            "vtab.rowid" => {
+                let r: VtabCursorReq = decode($payload)?;
+                return match vt::rowid(r.vtab_id, r.cursor_id) {
+                    Ok(v) => encode(&v),
+                    Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.rowid: {m}"))),
+                };
+            }
+            "vtab.fetch-batch" => {
+                let r: VtabFetchBatchReq = decode($payload)?;
+                return match vt::fetch_batch(r.vtab_id, r.cursor_id, r.max_rows) {
+                    Ok(rows) => encode(
+                        &rows.into_iter()
+                            .map(|row| VtabRow { rowid: row.rowid, columns: row.columns.into_iter().map(from_wit).collect() })
+                            .collect::<Vec<_>>(),
+                    ),
+                    Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.fetch-batch: {m}"))),
+                };
+            }
+            "vtab.close" => {
+                let r: VtabCursorReq = decode($payload)?;
+                return vt::close(r.vtab_id, r.cursor_id)
+                    .map(|_| Vec::new())
+                    .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.close: {m}")));
+            }
+            "vtab.disconnect" => {
+                let r: VtabInstanceReq = decode($payload)?;
+                return vt::disconnect(r.vtab_id, r.instance_id)
+                    .map(|_| Vec::new())
+                    .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.disconnect: {m}")));
+            }
+            "vtab.destroy" => {
+                let r: VtabInstanceReq = decode($payload)?;
+                return vt::destroy(r.vtab_id, r.instance_id)
+                    .map(|_| Vec::new())
+                    .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.destroy: {m}")));
+            }
+            _ => {}
+        }
+    }};
+}
+
+// A shared `parse_op` mapping the envelope op-name to the bindgen
+// ConstraintOp. Defined as a macro because the bindgen enum is per-world.
+macro_rules! define_parse_op {
+    ($vt:path) => {
+        fn parse_op(s: &str) -> $vt {
+            use $vt as Op;
+            match s {
+                "gt" => Op::Gt, "le" => Op::Le, "lt" => Op::Lt, "ge" => Op::Ge, "ne" => Op::Ne,
+                "match" => Op::Match, "like" => Op::Like, "regexp" => Op::Regexp, "glob" => Op::Glob,
+                "is-null" => Op::IsNull, "is-not-null" => Op::IsNotNull, "limit" => Op::Limit,
+                "offset" => Op::Offset, "function" => Op::Function, _ => Op::Eq,
+            }
+        }
+    };
+}
+
 // ===========================================================================
 // SHAPE: scalar  (world provider-scalar)
 // ===========================================================================
@@ -359,165 +506,18 @@ mod shape {
     use super::envelope::*;
     provider_impl!("provider-vtab");
     sqlvalue_conv!();
-    use sqlite::extension::vtab as vt;
-
-    fn op_name(op: vt::ConstraintOp) -> String {
-        use vt::ConstraintOp::*;
-        match op {
-            Eq => "eq", Gt => "gt", Le => "le", Lt => "lt", Ge => "ge", Ne => "ne",
-            Match => "match", Like => "like", Regexp => "regexp", Glob => "glob",
-            IsNull => "is-null", IsNotNull => "is-not-null", Limit => "limit",
-            Offset => "offset", Function => "function",
-        }
-        .to_string()
-    }
+    define_parse_op!(sqlite::extension::vtab::ConstraintOp);
 
     impl Guest for Provider {
         fn handle(method: String, payload: Vec<u8>) -> Result<Vec<u8>, Error> {
             common_methods!(method.as_str(), &payload);
-            match method.as_str() {
-                "call" => {
-                    let req: CallReq = decode(&payload)?;
-                    match sqlite::extension::scalar_function::call(req.func_id, &args_to_wit(&req.args)) {
-                        Ok(v) => encode(&from_wit(v)),
-                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("scalar call: {m}"))),
-                    }
-                }
-                "vtab.connect" | "vtab.create" => {
-                    let r: VtabConnectReq = decode(&payload)?;
-                    let res = if method == "vtab.create" {
-                        vt::create(r.vtab_id, r.instance_id, &r.db_name, &r.table_name, &r.args)
-                    } else {
-                        vt::connect(r.vtab_id, r.instance_id, &r.db_name, &r.table_name, &r.args)
-                    };
-                    match res {
-                        Ok(schema) => encode(&schema),
-                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.connect: {m}"))),
-                    }
-                }
-                "vtab.best-index" => {
-                    let r: VtabBestIndexReq = decode(&payload)?;
-                    let constraints: Vec<vt::Constraint> = r
-                        .constraints
-                        .iter()
-                        .map(|c| vt::Constraint {
-                            column: c.column,
-                            op: parse_op(&c.op),
-                            usable: c.usable,
-                        })
-                        .collect();
-                    let orderbys: Vec<vt::Orderby> = r
-                        .orderbys
-                        .iter()
-                        .map(|o| vt::Orderby { column: o.column, desc: o.desc })
-                        .collect();
-                    let info = vt::IndexInfo { constraints, orderbys, col_used: r.col_used };
-                    match vt::best_index(r.vtab_id, r.instance_id, &info) {
-                        Ok(p) => encode(&VtabIndexPlan {
-                            constraint_usage: p
-                                .constraint_usage
-                                .iter()
-                                .map(|u| VtabConstraintUsage { argv_index: u.argv_index, omit: u.omit })
-                                .collect(),
-                            idx_num: p.idx_num,
-                            idx_str: p.idx_str,
-                            estimated_cost: p.estimated_cost,
-                            estimated_rows: p.estimated_rows,
-                            orderby_consumed: p.orderby_consumed,
-                        }),
-                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.best-index: {m}"))),
-                    }
-                }
-                "vtab.open" => {
-                    let r: VtabOpenReq = decode(&payload)?;
-                    vt::open(r.vtab_id, r.instance_id, r.cursor_id)
-                        .map(|_| Vec::new())
-                        .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.open: {m}")))
-                }
-                "vtab.filter" => {
-                    let r: VtabFilterReq = decode(&payload)?;
-                    vt::filter(r.vtab_id, r.cursor_id, r.idx_num, r.idx_str.as_deref(), &args_to_wit(&r.args))
-                        .map(|_| Vec::new())
-                        .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.filter: {m}")))
-                }
-                "vtab.next" => {
-                    let r: VtabCursorReq = decode(&payload)?;
-                    vt::next(r.vtab_id, r.cursor_id)
-                        .map(|_| Vec::new())
-                        .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.next: {m}")))
-                }
-                "vtab.eof" => {
-                    let r: VtabCursorReq = decode(&payload)?;
-                    encode(&vt::eof(r.vtab_id, r.cursor_id))
-                }
-                "vtab.column" => {
-                    let r: VtabColumnReq = decode(&payload)?;
-                    match vt::column(r.vtab_id, r.cursor_id, r.col) {
-                        Ok(v) => encode(&from_wit(v)),
-                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.column: {m}"))),
-                    }
-                }
-                "vtab.rowid" => {
-                    let r: VtabCursorReq = decode(&payload)?;
-                    match vt::rowid(r.vtab_id, r.cursor_id) {
-                        Ok(v) => encode(&v),
-                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.rowid: {m}"))),
-                    }
-                }
-                "vtab.fetch-batch" => {
-                    let r: VtabFetchBatchReq = decode(&payload)?;
-                    match vt::fetch_batch(r.vtab_id, r.cursor_id, r.max_rows) {
-                        Ok(rows) => encode(
-                            &rows
-                                .into_iter()
-                                .map(|row| VtabRow {
-                                    rowid: row.rowid,
-                                    columns: row.columns.into_iter().map(from_wit).collect(),
-                                })
-                                .collect::<Vec<_>>(),
-                        ),
-                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab.fetch-batch: {m}"))),
-                    }
-                }
-                "vtab.close" => {
-                    let r: VtabCursorReq = decode(&payload)?;
-                    vt::close(r.vtab_id, r.cursor_id)
-                        .map(|_| Vec::new())
-                        .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.close: {m}")))
-                }
-                "vtab.disconnect" => {
-                    let r: VtabInstanceReq = decode(&payload)?;
-                    vt::disconnect(r.vtab_id, r.instance_id)
-                        .map(|_| Vec::new())
-                        .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.disconnect: {m}")))
-                }
-                "vtab.destroy" => {
-                    let r: VtabInstanceReq = decode(&payload)?;
-                    vt::destroy(r.vtab_id, r.instance_id)
-                        .map(|_| Vec::new())
-                        .map_err(|m| err(ErrorCode::ExecTrap, format!("vtab.destroy: {m}")))
-                }
-                other => Err(unknown(other)),
+            if method == "call" {
+                scalar_call_arm!(&payload);
             }
+            vtab_read_arms!(sqlite::extension::vtab, method.as_str(), &payload, parse_op);
+            Err(unknown(method.as_str()))
         }
     }
-
-    fn parse_op(s: &str) -> vt::ConstraintOp {
-        use vt::ConstraintOp::*;
-        match s {
-            "gt" => Gt, "le" => Le, "lt" => Lt, "ge" => Ge, "ne" => Ne,
-            "match" => Match, "like" => Like, "regexp" => Regexp, "glob" => Glob,
-            "is-null" => IsNull, "is-not-null" => IsNotNull, "limit" => Limit,
-            "offset" => Offset, "function" => Function, _ => Eq,
-        }
-    }
-
-    // op_name kept for completeness of the surface (host-side decode aid).
-    #[allow(dead_code)]
-    fn _touch() {
-        let _ = op_name as fn(vt::ConstraintOp) -> String;
-    }
-
     export!(Provider);
 }
 
@@ -529,11 +529,18 @@ mod shape {
     use super::envelope::*;
     provider_impl!("provider-vtab-mut");
     sqlvalue_conv!();
+    define_parse_op!(sqlite::extension::vtab::ConstraintOp);
     use sqlite::extension::vtab_update as vu;
 
     impl Guest for Provider {
         fn handle(method: String, payload: Vec<u8>) -> Result<Vec<u8>, Error> {
             common_methods!(method.as_str(), &payload);
+            if method == "call" {
+                scalar_call_arm!(&payload);
+            }
+            // A mutating vtab is a read vtab plus the update path: reuse the
+            // SAME read-surface dispatch, then add the vtab-update arms.
+            vtab_read_arms!(sqlite::extension::vtab, method.as_str(), &payload, parse_op);
             match method.as_str() {
                 "vtab-update.update" => {
                     let r: VtabUpdateReq = decode(&payload)?;

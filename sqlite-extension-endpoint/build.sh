@@ -32,6 +32,7 @@ declare -a TIERS=(
   "aggregate:count_min:count_min_extension:sqlink"
   "collation:uint:uint_extension:sqlink"
   "vtab:series:series_extension:sqlink"
+  "vtab-mut:inmem:inmem_extension:sqlink"
   "hooks:hookcb:hookcb_extension:local"
   "dotcmd:dotret:dotret_extension:local"
 )

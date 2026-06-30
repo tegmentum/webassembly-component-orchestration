@@ -195,6 +195,12 @@ struct WalHookReq {
     n_frames_in_wal: u32,
 }
 #[derive(Debug, Serialize)]
+struct VtabUpdateReq {
+    vtab_id: u64,
+    instance_id: u64,
+    args: Vec<SqlValue>,
+}
+#[derive(Debug, Serialize)]
 struct DotInvokeReq {
     func_id: u64,
     args: String,
@@ -304,6 +310,7 @@ fn main() {
         "collation" => scenario_collation(&inst, &manifest),
         "vtab" => scenario_vtab(&inst, &manifest),
         "hooks" => scenario_hooks(&inst, &manifest),
+        "vtab_mut" | "vtab-mut" => scenario_vtab_mut(&inst, &manifest),
         "dotcmd" => scenario_dotcmd(&inst, &manifest),
         other => die(format!("unknown scenario: {other}")),
     }
@@ -510,6 +517,100 @@ fn scenario_hooks(inst: &Instance, m: &Manifest) {
         }),
     ));
     println!("wal-hook on_wal_hook(id={}, main, frames=3) => rc={rc}", m.wal_hook_id);
+}
+
+fn scenario_vtab_mut(inst: &Instance, m: &Manifest) {
+    let vt: &VtabSpec = m
+        .vtabs
+        .iter()
+        .find(|v| v.mutable)
+        .unwrap_or_else(|| die("no mutable vtab in manifest".into()));
+    println!("  mutable vtab id={} name={} mutable={}", vt.id, vt.name, vt.mutable);
+    let inst_id = 1u64;
+    // create (non-eponymous): materialize backing storage + get schema.
+    let schema: String = dec(&invoke(
+        inst,
+        "vtab.create",
+        &encode(&VtabConnectReq {
+            vtab_id: vt.id,
+            instance_id: inst_id,
+            db_name: "main".to_string(),
+            table_name: vt.name.clone(),
+            args: vec![],
+        }),
+    ));
+    println!("  schema: {schema}");
+    // INSERT two rows via xUpdate. SQLite INSERT encoding:
+    //   args = [null, proposed_rowid, col0, col1, ...]
+    for (rid, key, val) in [(1i64, "alpha", 100i64), (2, "beta", 200)] {
+        let new_rowid: i64 = dec(&invoke(
+            inst,
+            "vtab-update.update",
+            &encode(&VtabUpdateReq {
+                vtab_id: vt.id,
+                instance_id: inst_id,
+                args: vec![
+                    SqlValue::Null,
+                    SqlValue::Integer(rid),
+                    SqlValue::Text(key.to_string()),
+                    SqlValue::Integer(val),
+                ],
+            }),
+        ));
+        println!("  INSERT (key={key}, value={val}) => rowid {new_rowid}");
+    }
+    // Read the rows back through the read-cursor surface.
+    let cur_id = 1u64;
+    let _: Vec<u8> = invoke(
+        inst,
+        "vtab.open",
+        &encode(&VtabOpenReq { vtab_id: vt.id, instance_id: inst_id, cursor_id: cur_id }),
+    );
+    let _: Vec<u8> = invoke(
+        inst,
+        "vtab.filter",
+        &encode(&VtabFilterReq {
+            vtab_id: vt.id,
+            cursor_id: cur_id,
+            idx_num: 0,
+            idx_str: None,
+            args: vec![],
+        }),
+    );
+    let mut rows = Vec::new();
+    let mut guard = 0;
+    loop {
+        let eof: bool = dec(&invoke(
+            inst,
+            "vtab.eof",
+            &encode(&VtabCursorReq { vtab_id: vt.id, cursor_id: cur_id }),
+        ));
+        if eof {
+            break;
+        }
+        let k: SqlValue = dec(&invoke(
+            inst,
+            "vtab.column",
+            &encode(&VtabColumnReq { vtab_id: vt.id, cursor_id: cur_id, col: 0 }),
+        ));
+        let v: SqlValue = dec(&invoke(
+            inst,
+            "vtab.column",
+            &encode(&VtabColumnReq { vtab_id: vt.id, cursor_id: cur_id, col: 1 }),
+        ));
+        rows.push(format!("({}={})", show(&k), show(&v)));
+        let _: Vec<u8> = invoke(
+            inst,
+            "vtab.next",
+            &encode(&VtabCursorReq { vtab_id: vt.id, cursor_id: cur_id }),
+        );
+        guard += 1;
+        if guard > 1000 {
+            die("vtab-mut scan did not terminate".into());
+        }
+    }
+    rows.sort();
+    println!("SELECT key,value FROM {} => [{}]", vt.name, rows.join(", "));
 }
 
 fn scenario_dotcmd(inst: &Instance, m: &Manifest) {

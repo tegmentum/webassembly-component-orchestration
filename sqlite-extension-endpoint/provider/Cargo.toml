@@ -1,0 +1,36 @@
+[package]
+name = "sqlite-extension-endpoint"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Reusable compose:dynlink provider bridging declarative sqlite:extension tiers to the endpoint bytes envelope"
+
+# Detached from any parent workspace — built standalone via
+# `cargo build --release --target wasm32-wasip2 --features <shape>`.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.44"
+wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+
+[features]
+# Exactly ONE shape feature must be selected at build time. Each selects
+# a `generate!` world; the bridging dispatch table is shared across all.
+default = ["scalar"]
+scalar = []
+aggregate = []
+collation = []
+vtab = []
+vtab-mut = []
+hooks = []
+dotcmd = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

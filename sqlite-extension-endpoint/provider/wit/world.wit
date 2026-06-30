@@ -1,0 +1,99 @@
+package compose:dynlink@0.1.0;
+
+/// `sqlite-extension-endpoint` — the REUSABLE, parameterized
+/// compose:dynlink provider that bridges DECLARATIVE
+/// `sqlite:extension@1.0.0` extensions to the uniform
+/// `compose:dynlink/endpoint` bytes envelope.
+///
+/// The bridging logic (the CBOR envelope dispatch table) is written
+/// ONCE in `src/`. The SPECIFIC extension is supplied at compose time
+/// via `wac plug` — the provider IMPORTS the declarative
+/// `sqlite:extension` EXPORT interfaces and the plug satisfies them.
+///
+/// Because `wac plug` leaves any unsatisfied import in place (and the
+/// dynlink host cannot satisfy a leftover `sqlite:extension/*` import),
+/// the provider is offered in a small fixed set of WORLD SHAPES, one
+/// per declarative export surface. Every shape compiles the SAME source
+/// — only the `generate!` world differs. Pick the shape whose import
+/// set matches the extension's export set at compose time.
+///
+/// `metadata` is imported by every shape (the manifest->register
+/// reconciliation + policy/capability mapping run off `describe()`).
+
+/// Scalar-only extensions (world `minimal`): metadata + scalar-function.
+/// (Carries forward the spike #218 surface.)
+world provider-scalar {
+  export endpoint;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+}
+
+/// Aggregate extensions (world `stateful`): adds the aggregate lifecycle
+/// (step / finalize / value / inverse). scalar-function is part of the
+/// `stateful` export surface so it is imported too.
+world provider-aggregate {
+  export endpoint;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+  import sqlite:extension/aggregate-function@1.0.0;
+}
+
+/// Collation extensions (world `collating`): adds collation.compare.
+world provider-collation {
+  export endpoint;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+  import sqlite:extension/collation@1.0.0;
+}
+
+/// Read-only virtual-table extensions (world `tabular`): the declarative
+/// vtab surface (best-index / create / connect / open / filter / next /
+/// eof / column / rowid / close / disconnect / destroy / fetch-batch).
+world provider-vtab {
+  export endpoint;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+  import sqlite:extension/vtab@1.0.0;
+}
+
+/// Mutating virtual-table extensions (world `tabular-mutating`): vtab +
+/// the vtab-update transactional path.
+world provider-vtab-mut {
+  export endpoint;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+  import sqlite:extension/vtab@1.0.0;
+  import sqlite:extension/vtab-update@1.0.0;
+}
+
+/// Hook extensions (world `hooked` / `hookprobe`): the callback surface
+/// — authorizer + update-hook + commit-hook + wal-hook. NOTE: an
+/// extension's *scalar probes* may still be reentrant into SQLite (they
+/// import spi / wal-frames / s3-base); those imports are NOT satisfied
+/// by this provider and are the reentrant tier #220's job. The hook
+/// CALLBACK surface bridged here is non-reentrant.
+world provider-hooks {
+  export endpoint;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+  import sqlite:extension/authorizer@1.0.0;
+  import sqlite:extension/update-hook@1.0.0;
+  import sqlite:extension/commit-hook@1.0.0;
+  import sqlite:extension/wal-hook@1.0.0;
+}
+
+/// Dot-command extensions (world `dotcmd-aware`): the declarative
+/// dot-command invoke surface. The provider also EXPORTS `cli-stdout`
+/// (and cli-stderr / cli-state) so it satisfies the extension's import
+/// of those host streams — capturing the streamed output and surfacing
+/// it in the invoke envelope. This is output-capture, NOT SQLite
+/// reentrancy.
+world provider-dotcmd {
+  export endpoint;
+  export sqlite:extension/cli-stdout@1.0.0;
+  export sqlite:extension/cli-stderr@1.0.0;
+  export sqlite:extension/cli-state@1.0.0;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+  import sqlite:extension/dot-command@1.0.0;
+}

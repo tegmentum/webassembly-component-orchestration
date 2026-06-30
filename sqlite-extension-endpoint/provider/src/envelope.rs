@@ -319,6 +319,39 @@ pub struct VtabUpdateReq {
     pub args: Vec<SqlValue>,
 }
 
+/// xRename — sqlite renamed the vtab's backing table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VtabRenameReq {
+    pub vtab_id: u64,
+    pub instance_id: u64,
+    pub new_name: String,
+}
+
+/// xSavepoint / xRelease / xRollbackTo — all carry the savepoint id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VtabSavepointReq {
+    pub vtab_id: u64,
+    pub instance_id: u64,
+    pub savepoint: i32,
+}
+
+/// xShadowName — module-level shadow-table-name probe (no instance).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VtabShadowNameReq {
+    pub vtab_id: u64,
+    pub name: String,
+}
+
+/// xIntegrity — per-instance integrity check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VtabIntegrityReq {
+    pub vtab_id: u64,
+    pub instance_id: u64,
+    pub schema: String,
+    pub table_name: String,
+    pub mode_flags: u32,
+}
+
 // --- authorizer / hooks ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

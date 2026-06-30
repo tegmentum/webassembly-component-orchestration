@@ -553,6 +553,61 @@ mod shape {
                 "vtab-update.sync" => txn(decode(&payload)?, vu::sync),
                 "vtab-update.commit" => txn(decode(&payload)?, vu::commit),
                 "vtab-update.rollback" => txn(decode(&payload)?, vu::rollback),
+                // Cold vtab methods (host task #228): one instance-scoped
+                // call each, unit-or-error (is-shadow-name returns a bool).
+                "vtab-update.rename" => {
+                    let r: VtabRenameReq = decode(&payload)?;
+                    match vu::rename(r.vtab_id, r.instance_id, &r.new_name) {
+                        Ok(()) => encode(&()),
+                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab-update.rename: {m}"))),
+                    }
+                }
+                "vtab-update.savepoint" => {
+                    let r: VtabSavepointReq = decode(&payload)?;
+                    match vu::savepoint(r.vtab_id, r.instance_id, r.savepoint) {
+                        Ok(()) => encode(&()),
+                        Err(m) => {
+                            Err(err(ErrorCode::ExecTrap, format!("vtab-update.savepoint: {m}")))
+                        }
+                    }
+                }
+                "vtab-update.release" => {
+                    let r: VtabSavepointReq = decode(&payload)?;
+                    match vu::release(r.vtab_id, r.instance_id, r.savepoint) {
+                        Ok(()) => encode(&()),
+                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("vtab-update.release: {m}"))),
+                    }
+                }
+                "vtab-update.rollback-to" => {
+                    let r: VtabSavepointReq = decode(&payload)?;
+                    match vu::rollback_to(r.vtab_id, r.instance_id, r.savepoint) {
+                        Ok(()) => encode(&()),
+                        Err(m) => Err(err(
+                            ErrorCode::ExecTrap,
+                            format!("vtab-update.rollback-to: {m}"),
+                        )),
+                    }
+                }
+                "vtab-update.is-shadow-name" => {
+                    let r: VtabShadowNameReq = decode(&payload)?;
+                    encode(&vu::is_shadow_name(r.vtab_id, &r.name))
+                }
+                "vtab-update.integrity" => {
+                    let r: VtabIntegrityReq = decode(&payload)?;
+                    match vu::integrity(
+                        r.vtab_id,
+                        r.instance_id,
+                        &r.schema,
+                        &r.table_name,
+                        r.mode_flags,
+                    ) {
+                        Ok(()) => encode(&()),
+                        Err(m) => Err(err(
+                            ErrorCode::ExecTrap,
+                            format!("vtab-update.integrity: {m}"),
+                        )),
+                    }
+                }
                 other => Err(unknown(other)),
             }
         }

@@ -48,8 +48,12 @@ test('declarative sqlite:extension tiers load + dispatch via compose:dynlink in 
   expect(r.hooks.stdout).toContain("authorize(read, arg1='secret') => deny")
   expect(r.hooks.stdout).toContain('commit-hook on_commit() => veto=false')
 
+  // dot-command (dotret): invoke returns text directly.
+  expect(r.dotcmd.stdout).toContain('loaded extension: dotret')
+  expect(r.dotcmd.stdout).toContain('.echo hello world => ok=true exit=0 text="echo: hello world"')
+
   // every tier reconciled policy (fail-closed gate) and ran describe.
-  for (const tier of ['scalar', 'aggregate', 'collation', 'vtab', 'hooks']) {
+  for (const tier of ['scalar', 'aggregate', 'collation', 'vtab', 'hooks', 'dotcmd']) {
     expect(r[tier].stdout).toContain('policy-check: ok=true')
     expect(r[tier].invokes).toContain('describe')
     expect(r[tier].invokes).toContain('policy-check')

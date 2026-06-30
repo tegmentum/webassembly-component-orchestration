@@ -1,0 +1,30 @@
+[package]
+name = "dotret-extension"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A minimal DOT-COMMAND extension for task #219 that returns its output via
+# `invoke-result.text` instead of streaming through the `cli-stdout` host
+# import. Because it never calls cli-stdout, that import is tree-shaken, so
+# the composed dot-command provider has no leftover cli-stdout import and
+# no cyclic dependency to resolve at compose time.
+#
+# (greet, the catalog dot-command extension, STREAMS via cli_stdout::write,
+# which makes provider<->extension mutually dependent — a cycle wac cannot
+# express. Capturing streamed output requires the host to wire greet's
+# cli-stdout import to the provider's cli-stdout export, exactly as the
+# bespoke loader does; see REPORT.)
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.44", features = ["macros"] }
+wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

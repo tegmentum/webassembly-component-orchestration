@@ -194,6 +194,23 @@ struct WalHookReq {
     db_name: String,
     n_frames_in_wal: u32,
 }
+#[derive(Debug, Serialize)]
+struct DotInvokeReq {
+    func_id: u64,
+    args: String,
+    interactive: bool,
+    display_mode: String,
+    bail_on_error: bool,
+}
+#[derive(Debug, Deserialize)]
+struct DotInvokeResp {
+    text: String,
+    ok: bool,
+    exit_code: i32,
+    stdout: String,
+    #[allow(dead_code)]
+    stderr: String,
+}
 
 fn encode<T: Serialize>(v: &T) -> Vec<u8> {
     let mut out = Vec::new();
@@ -287,6 +304,7 @@ fn main() {
         "collation" => scenario_collation(&inst, &manifest),
         "vtab" => scenario_vtab(&inst, &manifest),
         "hooks" => scenario_hooks(&inst, &manifest),
+        "dotcmd" => scenario_dotcmd(&inst, &manifest),
         other => die(format!("unknown scenario: {other}")),
     }
 }
@@ -492,4 +510,28 @@ fn scenario_hooks(inst: &Instance, m: &Manifest) {
         }),
     ));
     println!("wal-hook on_wal_hook(id={}, main, frames=3) => rc={rc}", m.wal_hook_id);
+}
+
+fn scenario_dotcmd(inst: &Instance, m: &Manifest) {
+    let cmd: &DotCommandSpec = m
+        .dot_commands
+        .iter()
+        .next()
+        .unwrap_or_else(|| die("no dot-command in manifest".into()));
+    println!("  dot-command id={} name=.{} summary={:?}", cmd.id, cmd.name, cmd.summary);
+    let req = DotInvokeReq {
+        func_id: cmd.id,
+        args: "hello world".to_string(),
+        interactive: false,
+        display_mode: "list".to_string(),
+        bail_on_error: false,
+    };
+    let resp: DotInvokeResp = dec(&invoke(inst, "dotcmd.invoke", &encode(&req)));
+    // dotret returns its output in invoke-result.text; the captured
+    // cli-stdout stream is the path a streaming command (e.g. greet) would
+    // use once the host wires its cli-stdout import (see REPORT).
+    println!(
+        ".{} hello world => ok={} exit={} text={:?} stdout={:?}",
+        cmd.name, resp.ok, resp.exit_code, resp.text, resp.stdout
+    );
 }

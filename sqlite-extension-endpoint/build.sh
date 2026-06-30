@@ -33,7 +33,7 @@ declare -a TIERS=(
   "collation:uint:uint_extension:sqlink"
   "vtab:series:series_extension:sqlink"
   "hooks:hookcb:hookcb_extension:local"
-  "dotcmd:greet:greet_extension:sqlink"
+  "dotcmd:dotret:dotret_extension:local"
 )
 
 componentize() {
@@ -95,14 +95,6 @@ for entry in "${TIERS[@]}"; do
   componentize "$built" "$comp"
 
   out="$OUT/providers/${crate}-provider.wasm"
-  if [[ "$shape" == "dotcmd" ]]; then
-    # The dot-command cli-stdout dependency is cyclic (provider provides
-    # cli-stdout, consumes dot-command) and wac cannot express the cycle.
-    # Left for host-mediated wiring / the reentrant tier (#220).
-    echo "    (dotcmd: provider built; wac-cyclic compose deferred — see REPORT)"
-    cp "$comp" "$OUT/components/greet.wasm"
-    continue
-  fi
   wac plug --plug "$comp" "$PROV_WASM" -o "$out"
   left=$(wasm-tools component wit "$out" 2>/dev/null \
     | grep -E '^  import sqlite:extension/[a-z-]+@' | grep -vE 'types|policy' || true)

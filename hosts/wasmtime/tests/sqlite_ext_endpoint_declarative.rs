@@ -159,3 +159,16 @@ fn tier_hooks_hookcb() {
     // wal hook returns SQLITE_OK.
     assert!(out.contains("=> rc=0"), "{out}");
 }
+
+#[test]
+fn tier_dotcmd_dotret() {
+    // dotret returns its output via invoke-result.text (no cli-stdout
+    // streaming), so the provider composes without the cyclic cli-stdout
+    // dependency. A STREAMING dot-command (greet) needs the host to wire
+    // its cli-stdout import to the provider's cli-stdout export — see REPORT.
+    let Some((code, out, err)) = run_tier("dotret-provider.wasm", "dotcmd") else { return };
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("loaded extension: dotret"), "{out}");
+    assert!(out.contains("dot-command id=1 name=.echo"), "{out}");
+    assert!(out.contains(r#".echo hello world => ok=true exit=0 text="echo: hello world""#), "{out}");
+}

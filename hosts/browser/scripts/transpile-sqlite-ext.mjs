@@ -35,6 +35,7 @@ const TIERS = {
   collation: 'uint-provider.wasm',
   vtab: 'series-provider.wasm',
   hooks: 'hookcb-provider.wasm',
+  dotcmd: 'dotret-provider.wasm',
 }
 
 function jco(args) {

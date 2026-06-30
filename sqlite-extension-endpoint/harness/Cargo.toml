@@ -11,7 +11,11 @@ name = "sqlite-ext-endpoint-harness"
 path = "src/main.rs"
 
 [dependencies]
-wit-bindgen = "0.44"
+# Pinned to 0.33 to match the spike #218 browser arm: jco 1.24's async
+# transpile of the `instance` resource's `invoke` method trips over the
+# async-subtask ABI that wit-bindgen 0.44 emits (ReferenceError:
+# currentSubtask). 0.33 emits the sync resource ABI jco handles cleanly.
+wit-bindgen = "0.33"
 ciborium = "0.2"
 serde = { version = "1", features = ["derive"] }
 

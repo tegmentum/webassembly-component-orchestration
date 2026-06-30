@@ -1,0 +1,20 @@
+[package]
+name = "aba-dlopen-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "aba-dlopen-harness"
+path = "src/main.rs"
+
+[dependencies]
+wit-bindgen = "0.33"
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = "s"
+strip = true

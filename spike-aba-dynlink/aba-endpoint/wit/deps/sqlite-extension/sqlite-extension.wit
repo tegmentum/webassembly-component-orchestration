@@ -1,0 +1,107 @@
+package sqlite:extension@0.1.0;
+
+interface types {
+  flags function-flags {
+    deterministic,
+    direct-only,
+    innocuous,
+  }
+
+  variant sql-value {
+    null,
+    integer(s64),
+    real(f64),
+    text(string),
+    blob(list<u8>),
+  }
+}
+interface policy {
+  variant capability {
+    spi,
+    prepared,
+    transaction,
+    schema,
+    state,
+    cache,
+    random,
+    text,
+    hashing,
+    encoding,
+    http,
+    dns,
+    wal-frames,
+    s3,
+  }
+}
+interface metadata {
+  use types.{function-flags};
+  use policy.{capability};
+
+  record scalar-function-spec {
+    id: u64,
+    name: string,
+    num-args: s32,
+    func-flags: function-flags,
+  }
+
+  record aggregate-function-spec {
+    id: u64,
+    name: string,
+    num-args: s32,
+    func-flags: function-flags,
+    is-window: bool,
+  }
+
+  record collation-spec {
+    id: u64,
+    name: string,
+  }
+
+  record vtab-spec {
+    id: u64,
+    name: string,
+    eponymous: bool,
+    mutable: bool,
+    batched: bool,
+  }
+
+  record dot-command-example {
+    description: string,
+    command: string,
+  }
+
+  record dot-command-spec {
+    id: u64,
+    name: string,
+    version: string,
+    summary: string,
+    usage: string,
+    help: string,
+    examples: list<dot-command-example>,
+    requires-write: bool,
+    no-args: bool,
+  }
+
+  record manifest {
+    name: string,
+    version: string,
+    scalar-functions: list<scalar-function-spec>,
+    aggregate-functions: list<aggregate-function-spec>,
+    collations: list<collation-spec>,
+    vtabs: list<vtab-spec>,
+    dot-commands: list<dot-command-spec>,
+    has-authorizer: bool,
+    has-update-hook: bool,
+    has-commit-hook: bool,
+    has-wal-hook: bool,
+    wal-hook-id: u64,
+    declared-capabilities: list<capability>,
+  }
+
+  describe: func() -> manifest;
+}
+interface scalar-function {
+  use types.{sql-value};
+
+  call: func(func-id: u64, args: list<sql-value>) -> result<sql-value, string>;
+}

@@ -1,0 +1,18 @@
+package compose:dynlink@0.1.0;
+
+/// The aba-endpoint adapter world.
+///
+/// It exports the uniform `compose:dynlink/endpoint` (so it is a valid
+/// compose:dynlink RESIDENT PROVIDER) and imports the `sqlite:extension`
+/// guest SPI surface a scalar extension exposes: `metadata.describe` and
+/// `scalar-function.call`. At compose time those imports are satisfied by
+/// the real `aba` extension component (which exports them) via `wac`.
+///
+/// This adapter IS "the SQLite connection behind the provider": it speaks
+/// the `sqlite:extension` contract to the loaded extension, and the
+/// dynlink `endpoint` byte-contract (CBOR envelope) to the outside world.
+world aba-provider {
+  export endpoint;
+  import sqlite:extension/metadata@0.1.0;
+  import sqlite:extension/scalar-function@0.1.0;
+}

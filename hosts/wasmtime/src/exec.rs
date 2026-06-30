@@ -146,13 +146,7 @@ impl ExecHandler {
         // consumer's endpoint import is bound to a provider at exec time
         // rather than statically composed.
         if plan.linkage == compose_core::types::Linkage::Runtime {
-            if !mounts.is_empty() {
-                self.events.warn(
-                    "mounts ignored for runtime-linked plan",
-                    Some("Linkage::Runtime exec path does not thread mounts yet".to_string()),
-                );
-            }
-            return self.run_cli_runtime_linked(plan, _args, _env);
+            return self.run_cli_runtime_linked(plan, _args, _env, mounts);
         }
 
         let start_time = std::time::Instant::now();
@@ -297,6 +291,7 @@ impl ExecHandler {
         plan: &PlanV1,
         args: Vec<String>,
         env: Vec<(String, String)>,
+        mounts: Vec<Mount>,
     ) -> Result<ExecResult, Error> {
         let start_time = std::time::Instant::now();
         self.events
@@ -350,7 +345,7 @@ impl ExecHandler {
             )
         })?;
         if crate::dynlink::imports_linker(&self.engine, &root_component) {
-            return self.run_cli_dlopen(plan, &root_bytes, &enforced_policy, args, env);
+            return self.run_cli_dlopen(plan, &root_bytes, &enforced_policy, args, env, mounts);
         }
 
         let binding = match plan.bindings.as_slice() {
@@ -474,6 +469,7 @@ impl ExecHandler {
         enforced_policy: &compose_core::policy::EnforcedPolicy,
         args: Vec<String>,
         env: Vec<(String, String)>,
+        mounts: Vec<Mount>,
     ) -> Result<ExecResult, Error> {
         let start_time = std::time::Instant::now();
         self.events
@@ -523,6 +519,7 @@ impl ExecHandler {
             granted,
             &args,
             &env,
+            &mounts,
         )?;
 
         // The exec-key folds the providers the guest actually resolved (for
@@ -826,14 +823,22 @@ impl ExecHandler {
         })?;
 
         // Execute the command - returns Result<(), ()>
-        let exit_code = match command.wasi_cli_run().call_run(&mut store).map_err(|e| {
-            Error::new(
-                ErrorCode::ExecTrap,
-                format!("command execution failed: {}", e),
-            )
-        })? {
-            Ok(()) => 0u32,
-            Err(()) => 1u32,
+        let exit_code = match command.wasi_cli_run().call_run(&mut store) {
+            Ok(Ok(())) => 0u32,
+            Ok(Err(())) => 1u32,
+            Err(e) => {
+                // Drain captured stderr so the user can see Python's
+                // exception text alongside the wasm-side backtrace.
+                let stderr_tail = stderr_clone.contents();
+                let tail_str = String::from_utf8_lossy(&stderr_tail);
+                let tail_str = tail_str.trim();
+                let msg = if tail_str.is_empty() {
+                    format!("command execution failed: {}", e)
+                } else {
+                    format!("command execution failed: {}\nguest stderr:\n{}", e, tail_str)
+                };
+                return Err(Error::new(ErrorCode::ExecTrap, msg));
+            }
         };
 
         // Drop store to release references to pipes

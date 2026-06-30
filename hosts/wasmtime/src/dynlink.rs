@@ -812,6 +812,7 @@ pub fn run_cli_dlopen(
     granted: BTreeSet<String>,
     args: &[String],
     env: &[(String, String)],
+    mounts: &[crate::exec::Mount],
 ) -> Result<(RuntimeLinkOutput, BTreeSet<Vec<u8>>), compose_core::types::Error> {
     use compose_core::types::ErrorCode as CoreErrorCode;
 
@@ -853,6 +854,21 @@ pub fn run_cli_dlopen(
     for (k, v) in env {
         builder.env(k, v);
     }
+    for mount in mounts {
+        builder
+            .preopened_dir(
+                &mount.host_path,
+                &mount.guest_path,
+                mount.dir_perms,
+                mount.file_perms,
+            )
+            .map_err(|e| {
+                core_error(
+                    CoreErrorCode::InternalError,
+                    format!("failed to preopen {}: {e}", mount.host_path.display()),
+                )
+            })?;
+    }
     builder
         .stdin(MemoryInputPipe::new(Vec::new()))
         .stdout(stdout.clone())
@@ -866,13 +882,22 @@ pub fn run_cli_dlopen(
             format!("failed to instantiate guest command: {e:?}"),
         )
     })?;
-    let exit_code = match command
-        .wasi_cli_run()
-        .call_run(&mut store)
-        .map_err(|e| core_error(CoreErrorCode::ExecTrap, format!("guest run trapped: {e:?}")))?
-    {
-        Ok(()) => 0u32,
-        Err(()) => 1u32,
+    let exit_code = match command.wasi_cli_run().call_run(&mut store) {
+        Ok(Ok(())) => 0u32,
+        Ok(Err(())) => 1u32,
+        Err(e) => {
+            // Drain captured stderr so the user sees Python's exception
+            // text alongside the wasm-side backtrace.
+            let stderr_tail = stderr.contents();
+            let tail_str = String::from_utf8_lossy(&stderr_tail);
+            let tail_str = tail_str.trim();
+            let msg = if tail_str.is_empty() {
+                format!("guest run trapped: {e:?}")
+            } else {
+                format!("guest run trapped: {e:?}\nguest stderr:\n{tail_str}")
+            };
+            return Err(core_error(CoreErrorCode::ExecTrap, msg));
+        }
     };
 
     let resolved = store.data().resolved_providers().clone();

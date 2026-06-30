@@ -638,6 +638,14 @@ impl StagingDir {
 
 impl Drop for StagingDir {
     fn drop(&mut self) {
+        // Preserve the staging dir for post-mortem debugging when
+        // COMPOSE_KEEP_STAGING is set in the environment. Useful when
+        // wasm-compose fails parsing one of the dep_NN files and you
+        // want to inspect the actual bytes.
+        if std::env::var_os("COMPOSE_KEEP_STAGING").is_some() {
+            eprintln!("compose-tmp preserved at: {}", self.path.display());
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }

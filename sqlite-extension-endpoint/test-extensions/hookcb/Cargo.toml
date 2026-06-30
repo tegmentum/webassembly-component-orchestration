@@ -1,0 +1,26 @@
+[package]
+name = "hookcb-extension"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A minimal, self-contained HOOK extension for task #219: it exercises the
+# DECLARATIVE hook-callback surface (authorizer + commit/update/wal hooks)
+# without any reentrant host-SPI calls, so every functional host import is
+# tree-shaken away and the composed provider has NO leftover imports the
+# dynlink host would need to satisfy. (hookprobe, the catalog hook
+# extension, drags in spi/wal-frames/s3-base via its reentrant scalar
+# probes — that surface is the reentrant tier #220's job.)
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.44", features = ["macros"] }
+wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

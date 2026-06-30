@@ -34,6 +34,7 @@ const TIERS = {
   aggregate: 'count_min-provider.wasm',
   collation: 'uint-provider.wasm',
   vtab: 'series-provider.wasm',
+  hooks: 'hookcb-provider.wasm',
 }
 
 function jco(args) {

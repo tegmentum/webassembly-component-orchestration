@@ -181,6 +181,19 @@ struct AuthorizeReq {
     database: Option<String>,
     trigger: Option<String>,
 }
+#[derive(Debug, Serialize)]
+struct UpdateHookReq {
+    operation: String,
+    database: String,
+    table: String,
+    rowid: i64,
+}
+#[derive(Debug, Serialize)]
+struct WalHookReq {
+    hook_id: u64,
+    db_name: String,
+    n_frames_in_wal: u32,
+}
 
 fn encode<T: Serialize>(v: &T) -> Vec<u8> {
     let mut out = Vec::new();
@@ -441,17 +454,42 @@ fn scenario_hooks(inst: &Instance, m: &Manifest) {
         "  hook surface: authorizer={} commit={} update={} wal={}",
         m.has_authorizer, m.has_commit_hook, m.has_update_hook, m.has_wal_hook
     );
-    // authorizer.authorize for an INSERT action.
-    let req = AuthorizeReq {
-        action: "insert".to_string(),
-        arg1: Some("t".to_string()),
-        arg2: None,
-        database: Some("main".to_string()),
-        trigger: None,
-    };
-    let res: String = dec(&invoke(inst, "authorizer.authorize", &encode(&req)));
-    println!("authorize(insert, table=t) => {res}");
+    // authorizer.authorize: an ordinary table is allowed; "secret" denied.
+    for tbl in ["t", "secret"] {
+        let req = AuthorizeReq {
+            action: "read".to_string(),
+            arg1: Some(tbl.to_string()),
+            arg2: None,
+            database: Some("main".to_string()),
+            trigger: None,
+        };
+        let res: String = dec(&invoke(inst, "authorizer.authorize", &encode(&req)));
+        println!("authorize(read, arg1='{tbl}') => {res}");
+    }
+    // update-hook callback (fire-and-forget).
+    let _: () = dec(&invoke(
+        inst,
+        "hook.update",
+        &encode(&UpdateHookReq {
+            operation: "insert".to_string(),
+            database: "main".to_string(),
+            table: "t".to_string(),
+            rowid: 1,
+        }),
+    ));
+    println!("update-hook on_update(insert, main.t, rowid=1) => dispatched");
     // commit hook: returns true to veto.
     let veto: bool = dec(&invoke(inst, "hook.commit", &[]));
     println!("commit-hook on_commit() => veto={veto}");
+    // wal hook: returns a SQLite result code.
+    let rc: i32 = dec(&invoke(
+        inst,
+        "hook.wal",
+        &encode(&WalHookReq {
+            hook_id: m.wal_hook_id,
+            db_name: "main".to_string(),
+            n_frames_in_wal: 3,
+        }),
+    ));
+    println!("wal-hook on_wal_hook(id={}, main, frames=3) => rc={rc}", m.wal_hook_id);
 }

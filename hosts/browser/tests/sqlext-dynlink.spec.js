@@ -42,8 +42,14 @@ test('declarative sqlite:extension tiers load + dispatch via compose:dynlink in 
   expect(r.vtab.stdout).toContain('loaded extension: series')
   expect(r.vtab.stdout).toContain('generate_series(1,5) => [1, 2, 3, 4, 5]')
 
+  // hooks (hookcb): authorizer allow/deny + commit/wal callbacks.
+  expect(r.hooks.stdout).toContain('loaded extension: hookcb')
+  expect(r.hooks.stdout).toContain("authorize(read, arg1='t') => ok")
+  expect(r.hooks.stdout).toContain("authorize(read, arg1='secret') => deny")
+  expect(r.hooks.stdout).toContain('commit-hook on_commit() => veto=false')
+
   // every tier reconciled policy (fail-closed gate) and ran describe.
-  for (const tier of ['scalar', 'aggregate', 'collation', 'vtab']) {
+  for (const tier of ['scalar', 'aggregate', 'collation', 'vtab', 'hooks']) {
     expect(r[tier].stdout).toContain('policy-check: ok=true')
     expect(r[tier].invokes).toContain('describe')
     expect(r[tier].invokes).toContain('policy-check')

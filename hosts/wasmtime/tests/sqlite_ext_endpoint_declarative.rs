@@ -139,3 +139,23 @@ fn tier_vtab_series() {
     // enumerated generate_series(1,5).
     assert!(out.contains("generate_series(1,5) => [1, 2, 3, 4, 5]"), "{out}");
 }
+
+#[test]
+fn tier_hooks_hookcb() {
+    // hookcb is a purpose-built declarative hook extension (no reentrant
+    // host-SPI), exercising the authorizer + update/commit/wal callback
+    // surface. (The catalog hook extension hookprobe drags in
+    // spi/wal-frames/s3-base via its reentrant scalar probes — that surface
+    // is the reentrant tier #220's job.)
+    let Some((code, out, err)) = run_tier("hookcb-provider.wasm", "hooks") else { return };
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("loaded extension: hookcb"), "{out}");
+    assert!(out.contains("authorizer=true commit=true update=true wal=true"), "{out}");
+    // authorizer: ordinary table allowed, "secret" denied.
+    assert!(out.contains("authorize(read, arg1='t') => ok"), "{out}");
+    assert!(out.contains("authorize(read, arg1='secret') => deny"), "{out}");
+    // commit hook does not veto by default.
+    assert!(out.contains("commit-hook on_commit() => veto=false"), "{out}");
+    // wal hook returns SQLITE_OK.
+    assert!(out.contains("=> rc=0"), "{out}");
+}

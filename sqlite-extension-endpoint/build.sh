@@ -24,13 +24,16 @@ mkdir -p "$OUT/components" "$OUT/providers"
 
 # shape -> (extension crate, built-module-name, component-output-name)
 # Every shape compiles the SAME provider source; only the world differs.
+# shape : extension-crate : built-module-base : source-root
+#   sqlink  -> a real catalog extension under $SQLINK_ROOT/extensions
+#   local   -> a purpose-built test extension under ./test-extensions
 declare -a TIERS=(
-  "scalar:aba:aba_extension"
-  "aggregate:count_min:count_min_extension"
-  "collation:uint:uint_extension"
-  "vtab:series:series_extension"
-  "hooks:hookprobe:hookprobe_extension"
-  "dotcmd:greet:greet_extension"
+  "scalar:aba:aba_extension:sqlink"
+  "aggregate:count_min:count_min_extension:sqlink"
+  "collation:uint:uint_extension:sqlink"
+  "vtab:series:series_extension:sqlink"
+  "hooks:hookcb:hookcb_extension:local"
+  "dotcmd:greet:greet_extension:sqlink"
 )
 
 componentize() {
@@ -69,13 +72,25 @@ build_extension() {
 echo "==> Building generic dlopen harness"
 ( cd harness && cargo build --release --target wasm32-wasip2 )
 
+build_local_extension() {
+  # $1 = test-extension dir name, $2 = built module basename.
+  local crate="$1" base="$2"
+  local extdir="$HERE/test-extensions/$crate"
+  ( cd "$extdir" && cargo build --release --target wasm32-wasip2 >/dev/null 2>&1 )
+  echo "$extdir/target/wasm32-wasip2/release/${base}.wasm"
+}
+
 for entry in "${TIERS[@]}"; do
-  IFS=: read -r shape crate base <<< "$entry"
+  IFS=: read -r shape crate base srcroot <<< "$entry"
   echo "==> [$shape] provider + $crate"
   ( cd provider && cargo build --release --target wasm32-wasip2 \
       --no-default-features --features "$shape" >/dev/null )
 
-  built="$(build_extension "$crate" "$base")"
+  if [[ "$srcroot" == "local" ]]; then
+    built="$(build_local_extension "$crate" "$base")"
+  else
+    built="$(build_extension "$crate" "$base")"
+  fi
   comp="$OUT/components/${crate}.wasm"
   componentize "$built" "$comp"
 

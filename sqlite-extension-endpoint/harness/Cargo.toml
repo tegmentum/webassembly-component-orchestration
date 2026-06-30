@@ -1,0 +1,20 @@
+[package]
+name = "sqlite-ext-endpoint-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "sqlite-ext-endpoint-harness"
+path = "src/main.rs"
+
+[dependencies]
+wit-bindgen = "0.44"
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = "s"
+strip = true

@@ -848,7 +848,13 @@ mod shape {
 
     fn se(m: String) -> SqliteError { SqliteError { code: 1, extended_code: 1, message: m } }
     fn eng() -> Result<Instance, SqliteError> {
-        resolve_by_id("engine").map_err(|e| se(format!("resolve engine: {}", e.message)))
+        // The host registers the engine-as-provider (the SqliteRuntime shim
+        // that services execute/prepare/step/... against the real connection)
+        // under id "sqlite-runtime" — see host main.rs / lib.rs
+        // register_compose_provider("sqlite-runtime", new_sqlite_runtime(..)).
+        // Reentrant SPI (#220) rides that provider via compose:dynlink/linker.
+        resolve_by_id("sqlite-runtime")
+            .map_err(|e| se(format!("resolve sqlite-runtime engine: {}", e.message)))
     }
     fn ienc(v: &C) -> Vec<u8> { let mut b = Vec::new(); let _ = ciborium::ser::into_writer(v, &mut b); b }
     fn idec(b: &[u8]) -> C { ciborium::de::from_reader(b).unwrap_or(C::Null) }

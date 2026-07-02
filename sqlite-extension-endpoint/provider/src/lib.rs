@@ -22,10 +22,11 @@ use envelope::*;
     feature = "vtab",
     feature = "vtab-mut",
     feature = "hooks",
+    feature = "hooks-noauth",
     feature = "dotcmd",
     feature = "reentrant-scalar",
 )))]
-compile_error!("select exactly one shape feature: scalar|aggregate|collation|vtab|vtab-mut|hooks|dotcmd");
+compile_error!("select exactly one shape feature: scalar|aggregate|collation|vtab|vtab-mut|hooks|hooks-noauth|dotcmd");
 
 // ===========================================================================
 // Shared encode/decode/error helpers, generic over the bindgen Error type
@@ -697,6 +698,65 @@ mod shape {
                         r.trigger.as_deref(),
                     );
                     encode(&result_name(res).to_string())
+                }
+                "hook.update" => {
+                    let r: UpdateHookReq = decode(&payload)?;
+                    uh::on_update(parse_update_op(&r.operation), &r.database, &r.table, r.rowid);
+                    encode(&())
+                }
+                "hook.commit" => {
+                    // on-commit returns true to convert commit -> rollback.
+                    encode(&ch::on_commit())
+                }
+                "hook.rollback" => {
+                    ch::on_rollback();
+                    encode(&())
+                }
+                "hook.wal" => {
+                    let r: WalHookReq = decode(&payload)?;
+                    let rc = wh::on_wal_hook(r.hook_id, &r.db_name, r.n_frames_in_wal);
+                    encode(&rc)
+                }
+                other => Err(unknown(other)),
+            }
+        }
+    }
+    export!(Provider);
+}
+
+// ===========================================================================
+// SHAPE: hooks-noauth (world provider-hooks-noauth) — row/commit/wal hooks
+// for extensions that DON'T export an authorizer (e.g. wal-archive). Same as
+// `hooks` minus the authorizer import + `authorizer.authorize` dispatch.
+// ===========================================================================
+#[cfg(feature = "hooks-noauth")]
+mod shape {
+    use super::envelope::*;
+    provider_impl!("provider-hooks-noauth");
+    sqlvalue_conv!();
+    use sqlite::extension::commit_hook as ch;
+    use sqlite::extension::types as t;
+    use sqlite::extension::update_hook as uh;
+    use sqlite::extension::wal_hook as wh;
+
+    fn parse_update_op(s: &str) -> t::UpdateOperation {
+        match s {
+            "update" => t::UpdateOperation::Update,
+            "delete" => t::UpdateOperation::Delete,
+            _ => t::UpdateOperation::Insert,
+        }
+    }
+
+    impl Guest for Provider {
+        fn handle(method: String, payload: Vec<u8>) -> Result<Vec<u8>, Error> {
+            common_methods!(method.as_str(), &payload);
+            match method.as_str() {
+                "call" => {
+                    let req: CallReq = decode(&payload)?;
+                    match sqlite::extension::scalar_function::call(req.func_id, &args_to_wit(&req.args)) {
+                        Ok(v) => encode(&from_wit(v)),
+                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("scalar call: {m}"))),
+                    }
                 }
                 "hook.update" => {
                     let r: UpdateHookReq = decode(&payload)?;

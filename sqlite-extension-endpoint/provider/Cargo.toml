@@ -29,6 +29,7 @@ collation = []
 vtab = []
 vtab-mut = []
 hooks = []
+hooks-noauth = []
 dotcmd = []
 
 [profile.release]

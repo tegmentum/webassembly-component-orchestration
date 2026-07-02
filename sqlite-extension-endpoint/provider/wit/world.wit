@@ -82,6 +82,20 @@ world provider-hooks {
   import sqlite:extension/wal-hook@1.0.0;
 }
 
+// hooks shape for extensions that export the row/commit/wal hooks but NOT
+// an authorizer (e.g. wal-archive). The `provider-hooks` world hard-imports
+// authorizer, so plugging an authorizer-less ext leaves that import
+// unsatisfied; this variant drops it. The rollout picks this when the ext
+// exports hook interfaces but does not export `authorizer`.
+world provider-hooks-noauth {
+  export endpoint;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+  import sqlite:extension/update-hook@1.0.0;
+  import sqlite:extension/commit-hook@1.0.0;
+  import sqlite:extension/wal-hook@1.0.0;
+}
+
 /// Dot-command extensions (world `dotcmd-aware`): the declarative
 /// dot-command invoke surface. The provider also EXPORTS `cli-stdout`
 /// (and cli-stderr / cli-state) so it satisfies the extension's import

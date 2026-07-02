@@ -74,11 +74,32 @@ impl Default for HostConfig {
             cache_dir: PathBuf::from(".compose/cache"),
             trust_dir: PathBuf::from(".compose/trust"),
             audit_dir: PathBuf::from(".compose/audit"),
-            max_blob_size: 100 * 1024 * 1024, // 100 MB
+            // 100 MiB — safe default for the multi-tenant `sys:compose`
+            // API path (DOS hedge). Build tools (composectl, sqlink,
+            // ducklink, datafission) that operate on trusted local files
+            // should call `HostConfig::build_tool()` instead, which
+            // raises the cap to 1 GiB so composed runtimes like
+            // postgis-composed.wasm (~112 MiB) go through.
+            max_blob_size: compose_core::limits::DEFAULT_MAX_BLOB_SIZE,
             attest_pkcs11: None,
             pgp_keyring: None,
             sigstore_trust_root: None,
             sigstore_identities: Vec::new(),
+        }
+    }
+}
+
+impl HostConfig {
+    /// Config tuned for build-time tooling. Same as [`Default`] except
+    /// `max_blob_size` is raised to
+    /// [`compose_core::limits::BUILD_TOOL_MAX_BLOB_SIZE`] so composed
+    /// runtimes larger than 100 MiB (postgis-composed and friends) can
+    /// go through the blob CAS. Callers can further override
+    /// `max_blob_size` after construction — the field is public.
+    pub fn build_tool() -> Self {
+        Self {
+            max_blob_size: compose_core::limits::BUILD_TOOL_MAX_BLOB_SIZE,
+            ..Self::default()
         }
     }
 }

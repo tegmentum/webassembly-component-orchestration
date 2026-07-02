@@ -1,6 +1,19 @@
 /// Resource limits and DOS protection
 use crate::types::{Error, ErrorCode};
 
+/// Default maximum blob size for the multi-tenant `sys:compose` API path
+/// (100 MiB). This is a DOS hedge for untrusted callers; single-tenant
+/// build tools operating on trusted local files should use
+/// [`BUILD_TOOL_MAX_BLOB_SIZE`] instead.
+pub const DEFAULT_MAX_BLOB_SIZE: u64 = 100 * 1024 * 1024;
+
+/// Recommended maximum blob size for build tools (`composectl` and
+/// downstream orchestrators like sqlink/ducklink/datafission) that
+/// operate on trusted local files. 1 GiB is large enough to cover
+/// composed runtimes like postgis-composed.wasm (~112 MiB) without
+/// materially widening a build-time DOS surface.
+pub const BUILD_TOOL_MAX_BLOB_SIZE: u64 = 1024 * 1024 * 1024;
+
 /// System-wide limits to prevent DOS attacks
 #[derive(Debug, Clone)]
 pub struct SystemLimits {
@@ -25,8 +38,22 @@ impl Default for SystemLimits {
             max_components: 1000,                 // 1000 components
             max_bindings: 10_000,                 // 10K bindings
             max_graph_depth: 100,                 // 100 levels deep
-            max_blob_size: 100 * 1024 * 1024,     // 100MB
+            max_blob_size: DEFAULT_MAX_BLOB_SIZE, // 100 MiB (multi-tenant hedge)
             max_total_memory: 1024 * 1024 * 1024, // 1GB
+        }
+    }
+}
+
+impl SystemLimits {
+    /// Limits tuned for build-time tooling (composectl, sqlink,
+    /// ducklink, datafission). Same as [`Default`] except `max_blob_size`
+    /// is raised to [`BUILD_TOOL_MAX_BLOB_SIZE`] to accommodate composed
+    /// runtimes (e.g. postgis-composed.wasm ~112 MiB) that exceed the
+    /// multi-tenant 100 MiB cap.
+    pub fn build_tool() -> Self {
+        Self {
+            max_blob_size: BUILD_TOOL_MAX_BLOB_SIZE,
+            ..Self::default()
         }
     }
 }

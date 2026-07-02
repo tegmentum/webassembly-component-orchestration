@@ -38,10 +38,30 @@ use sys::compose::types::Error as WitError;
 /// docs for the full preopen contract.
 const BLOBS_DIR: &str = "/blobs";
 
-/// Default maximum blob size: 100 MiB. Matches the host's default
-/// HostConfig.max_blob_size. A future revision may surface this via
-/// configuration rather than hardcoding it on both sides.
-const MAX_BLOB_SIZE: u64 = 100 * 1024 * 1024;
+/// Environment variable a host can set to raise the maximum blob size
+/// this guest will accept during `validate`. The value is parsed as a
+/// base-10 `u64` byte count. If unset or unparseable, the guest falls
+/// back to [`compose_core::limits::DEFAULT_MAX_BLOB_SIZE`] (100 MiB) —
+/// the safe multi-tenant hedge.
+///
+/// Build-tool hosts (composectl, sqlink, ducklink, datafission) that
+/// need to validate plans referencing composed runtimes larger than
+/// 100 MiB (e.g. postgis-composed.wasm ~112 MiB) should set this to
+/// [`compose_core::limits::BUILD_TOOL_MAX_BLOB_SIZE`] (1 GiB) or larger
+/// via `wasi:cli/environment` before instantiating this component.
+const MAX_BLOB_SIZE_ENV: &str = "COMPOSE_MAX_BLOB_SIZE";
+
+/// Resolve the maximum blob size for the current invocation from the
+/// [`MAX_BLOB_SIZE_ENV`] environment variable, falling back to the
+/// portable core's `DEFAULT_MAX_BLOB_SIZE` when unset. Called per
+/// `validate` invocation so the host can retune between calls without
+/// re-instantiating the guest.
+fn resolve_max_blob_size() -> u64 {
+    std::env::var(MAX_BLOB_SIZE_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(compose_core::limits::DEFAULT_MAX_BLOB_SIZE)
+}
 
 /// The exported component. Bind every interface this crate provides
 /// onto this one struct; wit-bindgen wires them up via `export!`.
@@ -107,7 +127,7 @@ impl PlanGuest for Component {
         let core_plan = adapters::wit_plan_to_core(plan);
         let blobs = compose_core::blobs::BlobStore::new(
             std::path::PathBuf::from(BLOBS_DIR),
-            MAX_BLOB_SIZE,
+            resolve_max_blob_size(),
         )
         .map_err(|e| WitError {
             code: sys::compose::types::ErrorCode::InternalError,

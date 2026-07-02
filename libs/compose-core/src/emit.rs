@@ -16,8 +16,8 @@ use wasmparser::{Validator, WasmFeatures};
 // wasmparser validation with "resource types are not the same". wac
 // understands WIT semantics and threads the right type identities
 // through, so this is the correct primitive for composition.
-use wac_graph::{plug, CompositionGraph, EncodeOptions};
-use wac_types::Package;
+use wac_graph::{CompositionGraph, EncodeOptions, NodeId, PackageId};
+use wac_types::{are_semver_compatible, Package, SubtypeChecker};
 
 /// Emit handler for composition
 pub struct EmitHandler {
@@ -222,9 +222,17 @@ impl EmitHandler {
             )
         })?;
 
-        // No bindings → return root unchanged.
-        if plan.bindings.is_empty() {
+        // No bindings and no explicit re-exports → return root unchanged.
+        if plan.bindings.is_empty() && plan.explicit_exports.is_empty() {
             return Ok(root_bytes.clone());
+        }
+
+        // If the plan needs explicit re-exports we must use the wac-graph
+        // library path: neither `wac plug` nor `wasm-compose` can express
+        // "alias-export this plug's interface at the composed component's
+        // outer world" as a build primitive.
+        if !plan.explicit_exports.is_empty() {
+            return self.compose_with_wac_graph(plan, component_map);
         }
 
         // Use wac-graph's plug primitive (WIT-level wiring that preserves
@@ -404,8 +412,10 @@ impl EmitHandler {
 
         // Register each provider as a plug. Order is preserved so
         // composition is deterministic. Skip the root if it appears
-        // again (a degenerate plan shape).
-        let mut plug_ids = Vec::new();
+        // again (a degenerate plan shape). Track the PackageId keyed
+        // by component id so the explicit-export pass can look up the
+        // corresponding instantiation.
+        let mut plug_packages: Vec<(String, PackageId)> = Vec::new();
         let mut staged: HashSet<String> = HashSet::new();
         for binding in &plan.bindings {
             if !staged.insert(binding.provider_id.clone()) || binding.provider_id == plan.root {
@@ -438,17 +448,252 @@ impl EmitHandler {
                     format!("wac: register plug {}: {}", binding.provider_id, e),
                 )
             })?;
-            plug_ids.push(dep_id);
+            plug_packages.push((binding.provider_id.clone(), dep_id));
         }
 
-        // Plug the providers into the socket. wac matches by WIT
-        // interface name on each plug's exports.
-        plug(&mut graph, plug_ids, socket_id).map_err(|e| {
-            Error::new(
+        // Some `explicit-exports` may name a component that has no
+        // import binding in the plan (a "pure re-export" plug that
+        // supplies nothing the root imports, but exports something the
+        // outer world needs). Register those as plug packages too so
+        // the explicit-export pass has instances to alias against.
+        for ee in &plan.explicit_exports {
+            if ee.source_instance == plan.root {
+                // Root exports are auto-exported by the plug loop.
+                continue;
+            }
+            if staged.insert(ee.source_instance.clone()) {
+                let dep_bytes = component_map.get(&ee.source_instance).ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!(
+                            "explicit-export source component {} not found",
+                            ee.source_instance
+                        ),
+                    )
+                })?;
+                let dep_pkg = Package::from_bytes(
+                    &ee.source_instance,
+                    None::<&semver::Version>,
+                    dep_bytes.clone(),
+                    graph.types_mut(),
+                )
+                .map_err(|e| {
+                    Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!(
+                            "wac: register explicit-export package {}: {}",
+                            ee.source_instance, e
+                        ),
+                    )
+                })?;
+                let dep_id = graph.register_package(dep_pkg).map_err(|e| {
+                    Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!(
+                            "wac: register explicit-export {}: {}",
+                            ee.source_instance, e
+                        ),
+                    )
+                })?;
+                plug_packages.push((ee.source_instance.clone(), dep_id));
+            }
+        }
+
+        // Inline the wac-graph `plug` helper so we can track the
+        // per-plug instantiation NodeId — the higher-level `plug()` in
+        // the crate hides it, but explicit-exports need it. Semantically
+        // identical: instantiate the socket, then for each plug find
+        // exports that satisfy socket imports (exact or semver-compat),
+        // wire them, and finally auto-export the socket's exports.
+        //
+        // Tracks plug instantiations by component id. Only populated
+        // for plugs whose exports the socket actually consumed — a plug
+        // that connects nothing gets its NodeId only when an explicit
+        // export needs it (populated lazily in the export loop below).
+        let socket_instantiation = graph.instantiate(socket_id);
+        let mut plug_instantiations: HashMap<String, NodeId> = HashMap::new();
+        let mut any_plugged = false;
+
+        for (plug_component_id, plug_pkg_id) in &plug_packages {
+            let mut matches: Vec<(String, String)> = Vec::new();
+            {
+                let mut cache = Default::default();
+                let mut checker = SubtypeChecker::new(&mut cache);
+                let plug_ty = graph[*plug_pkg_id].ty();
+                let socket_ty = graph[socket_id].ty();
+                for (name, plug_ty_id) in &graph.types()[plug_ty].exports {
+                    let matching_import = graph.types()[socket_ty]
+                        .imports
+                        .get(name)
+                        .map(|ty| (name.clone(), ty))
+                        .or_else(|| {
+                            graph.types()[socket_ty]
+                                .imports
+                                .iter()
+                                .find(|(import_name, _)| {
+                                    are_semver_compatible(name, import_name)
+                                })
+                                .map(|(import_name, ty)| (import_name.clone(), ty))
+                        });
+                    if let Some((socket_name, socket_ty_id)) = matching_import {
+                        if checker
+                            .is_subtype(
+                                *plug_ty_id,
+                                graph.types(),
+                                *socket_ty_id,
+                                graph.types(),
+                            )
+                            .is_ok()
+                        {
+                            matches.push((name.clone(), socket_name));
+                        }
+                    }
+                }
+            }
+
+            if matches.is_empty() {
+                continue;
+            }
+
+            let plug_inst = graph.instantiate(*plug_pkg_id);
+            plug_instantiations.insert(plug_component_id.clone(), plug_inst);
+            any_plugged = true;
+            for (plug_name, socket_name) in matches {
+                let alias =
+                    graph
+                        .alias_instance_export(plug_inst, &plug_name)
+                        .map_err(|e| {
+                            Error::new(
+                                ErrorCode::EmitCompositionFailed,
+                                format!(
+                                    "wac: alias {}::{} for wiring: {}",
+                                    plug_component_id, plug_name, e
+                                ),
+                            )
+                        })?;
+                graph
+                    .set_instantiation_argument(
+                        socket_instantiation,
+                        &socket_name,
+                        alias,
+                    )
+                    .map_err(|e| {
+                        Error::new(
+                            ErrorCode::EmitCompositionFailed,
+                            format!(
+                                "wac: wire {} <- {}::{}: {}",
+                                socket_name, plug_component_id, plug_name, e
+                            ),
+                        )
+                    })?;
+            }
+        }
+
+        if !any_plugged && plan.explicit_exports.is_empty() {
+            // Same signal `wac_graph::plug` emits — nothing to compose.
+            return Err(Error::new(
                 ErrorCode::EmitCompositionFailed,
-                format!("wac plug failed: {}", e),
-            )
-        })?;
+                "wac: no plug exports matched any socket imports",
+            ));
+        }
+
+        // Auto-export the socket's exports at the outer world (same as
+        // `plug()` does).
+        let socket_export_names: Vec<String> = graph.types()[graph[socket_id].ty()]
+            .exports
+            .keys()
+            .cloned()
+            .collect();
+        for name in socket_export_names {
+            let alias =
+                graph
+                    .alias_instance_export(socket_instantiation, &name)
+                    .map_err(|e| {
+                        Error::new(
+                            ErrorCode::EmitCompositionFailed,
+                            format!("wac: alias socket export {}: {}", name, e),
+                        )
+                    })?;
+            graph.export(alias, &name).map_err(|e| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!("wac: export socket {}: {}", name, e),
+                )
+            })?;
+        }
+
+        // Explicit re-exports: alias each named plug's specified
+        // interface and add as a top-level export of the composed
+        // component. Instantiate the plug lazily if it wasn't
+        // instantiated during the wiring pass (a "pure re-export" that
+        // supplies nothing the root imports).
+        //
+        // Duplicate names (whether a re-export collides with the
+        // socket's own auto-export, or two explicit-exports name the
+        // same interface) surface as an EmitCompositionFailed error
+        // rather than silently overwriting.
+        for ee in &plan.explicit_exports {
+            if ee.source_instance == plan.root {
+                // Root exports were already auto-exported. Nothing to do,
+                // but validate the interface actually exists to catch
+                // typos.
+                let root_exports = &graph.types()[graph[socket_id].ty()].exports;
+                if !root_exports.contains_key(ee.interface_name.as_str()) {
+                    return Err(Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!(
+                            "explicit-export {}::{} not found among root exports",
+                            ee.source_instance, ee.interface_name
+                        ),
+                    ));
+                }
+                continue;
+            }
+
+            // Look up the plug PackageId. Must exist — we registered a
+            // package for every explicit-export source above.
+            let plug_pkg_id = plug_packages
+                .iter()
+                .find(|(id, _)| id == &ee.source_instance)
+                .map(|(_, id)| *id)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!(
+                            "explicit-export references unregistered component: {}",
+                            ee.source_instance
+                        ),
+                    )
+                })?;
+
+            // Reuse an existing instantiation if the wiring pass
+            // already created one for this plug; otherwise instantiate
+            // it now.
+            let plug_inst = *plug_instantiations
+                .entry(ee.source_instance.clone())
+                .or_insert_with(|| graph.instantiate(plug_pkg_id));
+
+            let alias = graph
+                .alias_instance_export(plug_inst, &ee.interface_name)
+                .map_err(|e| {
+                    Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!(
+                            "wac: alias explicit-export {}::{}: {}",
+                            ee.source_instance, ee.interface_name, e
+                        ),
+                    )
+                })?;
+            graph.export(alias, &ee.interface_name).map_err(|e| {
+                Error::new(
+                    ErrorCode::EmitCompositionFailed,
+                    format!(
+                        "wac: export explicit-export {}::{}: {}",
+                        ee.source_instance, ee.interface_name, e
+                    ),
+                )
+            })?;
+        }
 
         // Encode without wac's built-in validation — we validate the
         // output later in compose_internal so error paths funnel
@@ -468,8 +713,9 @@ impl EmitHandler {
         self.events.info(
             "wac-plug composition complete",
             Some(format!(
-                "plugs: {}, output size: {} bytes",
+                "plugs: {}, explicit-exports: {}, output size: {} bytes",
                 staged.len(),
+                plan.explicit_exports.len(),
                 composed.len()
             )),
         );

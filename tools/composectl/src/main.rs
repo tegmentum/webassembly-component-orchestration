@@ -19,8 +19,15 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Initialize host
-    let config = HostConfig::default();
+    // Initialize host. composectl is a build-time tool operating on
+    // trusted local files, so it uses the 1 GiB `build_tool()`
+    // ceiling rather than the multi-tenant 100 MiB default. A
+    // `--max-blob-size` flag (or `COMPOSECTL_MAX_BLOB_SIZE` env var)
+    // can raise or lower this per invocation.
+    let mut config = HostConfig::build_tool();
+    if let Some(max) = cli.max_blob_size {
+        config.max_blob_size = max;
+    }
     let host = CompositorHost::new(config)?;
 
     match cli.command {

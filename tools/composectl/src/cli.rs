@@ -18,6 +18,19 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
+    /// Maximum blob size in bytes accepted by the blob CAS. Overrides
+    /// the default 1 GiB build-tool ceiling. Also honours
+    /// `COMPOSECTL_MAX_BLOB_SIZE` from the environment when the flag
+    /// is not set. Use a larger value to admit composed runtimes above
+    /// the default (e.g. postgis-composed.wasm).
+    #[arg(
+        long,
+        global = true,
+        env = "COMPOSECTL_MAX_BLOB_SIZE",
+        value_name = "BYTES"
+    )]
+    pub max_blob_size: Option<u64>,
+
     #[command(subcommand)]
     pub command: Commands,
 }

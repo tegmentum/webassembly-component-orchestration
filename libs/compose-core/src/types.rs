@@ -218,6 +218,24 @@ pub struct SecretBinding {
     pub backend_uri: String,
 }
 
+/// Explicit re-export of a non-root plug's interface.
+///
+/// The composer auto-exports the socket (root) component's exports.
+/// `ExplicitExport` entries surface additional interfaces from a
+/// named plug at the composed component's outer world — required
+/// when a host needs to call a plug's export directly (e.g.
+/// `sqlink:wasm/dispatch-bridge@0.1.0` on the sqlite-lib plug)
+/// rather than through the root.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExplicitExport {
+    /// Component id (in the plan's components list) whose export is
+    /// being surfaced.
+    pub source_instance: ComponentId,
+    /// Fully qualified WIT interface name (e.g.
+    /// `sqlite:extension/types@0.1.0`).
+    pub interface_name: String,
+}
+
 /// Composition plan (version 1)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanV1 {
@@ -231,6 +249,12 @@ pub struct PlanV1 {
     /// `Static` (the default), so static plans keep their existing digests.
     #[serde(default, skip_serializing_if = "Linkage::is_static")]
     pub linkage: Linkage,
+    /// Additional non-root exports to surface at the composed
+    /// component's outer world. Omitted from the canonical encoding
+    /// when empty, so plans that predate this field keep their
+    /// existing digests byte-for-byte.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explicit_exports: Vec<ExplicitExport>,
 }
 
 /// Composition result

@@ -23,6 +23,7 @@ fn fixture_plan(name_suffix: &str) -> PlanV1 {
         secrets: vec![],
         policy: Policy::default(),
         linkage: Default::default(),
+            explicit_exports: vec![],
     }
 }
 

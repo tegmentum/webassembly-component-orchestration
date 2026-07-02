@@ -35,6 +35,7 @@ fn plan_v1(
         secrets: vec![],
         policy,
         linkage: Linkage::Static,
+        explicit_exports: vec![],
     }
 }
 

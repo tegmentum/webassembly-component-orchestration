@@ -7,8 +7,8 @@
 //! necessarily explicit — there is no derive macro that bridges the
 //! two type systems today.
 use crate::exports::sys::compose::plan::{
-    ComponentSpec as WitComponentSpec, ImportBinding as WitImportBinding,
-    PlanV1 as WitPlanV1, SecretBinding as WitSecretBinding,
+    ComponentSpec as WitComponentSpec, ExplicitExport as WitExplicitExport,
+    ImportBinding as WitImportBinding, PlanV1 as WitPlanV1, SecretBinding as WitSecretBinding,
 };
 use crate::sys::compose::types::{
     Capability as WitCapability, CapabilityLevel as WitCapabilityLevel,
@@ -19,7 +19,8 @@ use crate::sys::compose::types::{
 use compose_core::types::{
     Capability as CoreCapability, CapabilityLevel as CoreCapabilityLevel,
     ComponentSpec as CoreComponentSpec, DeterminismMode as CoreDeterminismMode,
-    Error as CoreError, ErrorCode as CoreErrorCode, ImportBinding as CoreImportBinding,
+    Error as CoreError, ErrorCode as CoreErrorCode,
+    ExplicitExport as CoreExplicitExport, ImportBinding as CoreImportBinding,
     Linkage as CoreLinkage,
     PlanV1 as CorePlanV1, Policy as CorePolicy, ResourceLimits as CoreResourceLimits,
     SecretBinding as CoreSecretBinding,
@@ -39,6 +40,18 @@ pub fn wit_plan_to_core(p: WitPlanV1) -> CorePlanV1 {
             WitLinkageMode::Static => CoreLinkage::Static,
             WitLinkageMode::Runtime => CoreLinkage::Runtime,
         },
+        explicit_exports: p
+            .explicit_exports
+            .into_iter()
+            .map(wit_explicit_export_to_core)
+            .collect(),
+    }
+}
+
+fn wit_explicit_export_to_core(e: WitExplicitExport) -> CoreExplicitExport {
+    CoreExplicitExport {
+        source_instance: e.source_instance,
+        interface_name: e.interface_name,
     }
 }
 
@@ -114,6 +127,18 @@ pub fn core_plan_to_wit(p: CorePlanV1) -> WitPlanV1 {
             CoreLinkage::Static => WitLinkageMode::Static,
             CoreLinkage::Runtime => WitLinkageMode::Runtime,
         },
+        explicit_exports: p
+            .explicit_exports
+            .into_iter()
+            .map(core_explicit_export_to_wit)
+            .collect(),
+    }
+}
+
+fn core_explicit_export_to_wit(e: CoreExplicitExport) -> WitExplicitExport {
+    WitExplicitExport {
+        source_instance: e.source_instance,
+        interface_name: e.interface_name,
     }
 }
 

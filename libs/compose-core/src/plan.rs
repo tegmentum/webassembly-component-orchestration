@@ -74,6 +74,9 @@ impl PlanValidator {
         // Phase 5: Linkage constraints
         self.validate_linkage(plan)?;
 
+        // Phase 6: Explicit exports
+        self.validate_explicit_exports(plan)?;
+
         Ok(())
     }
 
@@ -87,6 +90,43 @@ impl PlanValidator {
         self.validate_graph(plan)?;
         self.validate_bindings(plan)?;
         self.validate_linkage(plan)?;
+        self.validate_explicit_exports(plan)?;
+        Ok(())
+    }
+
+    /// Explicit re-exports must reference a component in the plan and
+    /// name a non-empty interface. Duplicates (same source + interface)
+    /// are a plan authoring bug — catch them here rather than at emit
+    /// where they surface as a wac graph error.
+    fn validate_explicit_exports(&self, plan: &PlanV1) -> Result<(), Error> {
+        let comp_ids: HashSet<_> = plan.components.iter().map(|c| c.id.as_str()).collect();
+        let mut seen: HashSet<(&str, &str)> = HashSet::new();
+        for ee in &plan.explicit_exports {
+            if ee.source_instance.is_empty() || ee.interface_name.is_empty() {
+                return Err(Error::new(
+                    ErrorCode::PlanInvalidSchema,
+                    "explicit-export has empty source_instance or interface_name",
+                ));
+            }
+            if !comp_ids.contains(ee.source_instance.as_str()) {
+                return Err(Error::new(
+                    ErrorCode::PlanInvalidGraph,
+                    format!(
+                        "explicit-export source {} not found in components",
+                        ee.source_instance
+                    ),
+                ));
+            }
+            if !seen.insert((ee.source_instance.as_str(), ee.interface_name.as_str())) {
+                return Err(Error::new(
+                    ErrorCode::PlanInvalidSchema,
+                    format!(
+                        "duplicate explicit-export {}::{}",
+                        ee.source_instance, ee.interface_name
+                    ),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -317,6 +357,7 @@ mod tests {
             secrets: vec![],
             policy: Policy::default(),
             linkage: Default::default(),
+            explicit_exports: vec![],
         }
     }
 
@@ -349,5 +390,100 @@ mod tests {
             result.unwrap_err().code,
             ErrorCode::PlanInvalidSchema
         ));
+    }
+
+    /// The canonical CBOR encoding must be byte-identical between a plan
+    /// with the pre-`explicit_exports` field-set (i.e. `explicit_exports:
+    /// vec![]`) and a plan whose encoder pre-dated the field. This is
+    /// what makes the schema extension a backward-compatible wire-format
+    /// change rather than a breaking one.
+    #[test]
+    fn empty_explicit_exports_is_omitted_from_canonical_encoding() {
+        // Same shape as `hello-plan.cbor` in conformance/vectors — the
+        // vector's committed sha256 doubles as an on-disk snapshot of
+        // "before the field existed", so this test asserts the pre- and
+        // post-field encodings agree.
+        let plan = PlanV1 {
+            version: "1".into(),
+            root: "app".into(),
+            components: vec![ComponentSpec {
+                id: "app".into(),
+                digest: vec![0x11; 32],
+                source: None,
+            }],
+            bindings: vec![],
+            secrets: vec![],
+            policy: Policy::default(),
+            linkage: Default::default(),
+            explicit_exports: vec![],
+        };
+        let bytes = serialize(&plan).unwrap();
+        // Hex-decoded canonical encoding of `hello-plan.cbor` (checked in
+        // under conformance/vectors, sha256 `d5cff6…`). Any drift here
+        // means the empty-list serde skip is broken — a real wire break.
+        let expected = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../conformance/vectors/hello-plan.cbor"
+        ))
+        .expect("read hello-plan.cbor");
+        assert_eq!(
+            bytes, expected,
+            "canonical encoding for empty explicit_exports must match pre-field vector"
+        );
+    }
+
+    #[test]
+    fn explicit_exports_round_trip_preserves_entries() {
+        use crate::types::ExplicitExport;
+        let mut plan = create_test_plan();
+        plan.explicit_exports = vec![
+            ExplicitExport {
+                source_instance: "root".into(),
+                interface_name: "sqlite:extension/types@0.1.0".into(),
+            },
+            ExplicitExport {
+                source_instance: "root".into(),
+                interface_name: "sqlink:wasm/dispatch-bridge@0.1.0".into(),
+            },
+        ];
+        let bytes = serialize(&plan).unwrap();
+        let restored = deserialize(&bytes).unwrap();
+        assert_eq!(plan.explicit_exports, restored.explicit_exports);
+    }
+
+    #[test]
+    fn explicit_exports_referencing_unknown_component_are_rejected() {
+        use crate::types::ExplicitExport;
+        let dir = tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
+        let validator = PlanValidator::new(blobs);
+        let mut plan = create_test_plan();
+        plan.explicit_exports = vec![ExplicitExport {
+            source_instance: "ghost".into(),
+            interface_name: "foo:bar/baz@0.1.0".into(),
+        }];
+        let err = validator.validate_structure(&plan).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::PlanInvalidGraph), "{:?}", err);
+    }
+
+    #[test]
+    fn duplicate_explicit_exports_are_rejected() {
+        use crate::types::ExplicitExport;
+        let dir = tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024).unwrap();
+        let validator = PlanValidator::new(blobs);
+        let mut plan = create_test_plan();
+        plan.explicit_exports = vec![
+            ExplicitExport {
+                source_instance: "root".into(),
+                interface_name: "foo:bar/baz@0.1.0".into(),
+            },
+            ExplicitExport {
+                source_instance: "root".into(),
+                interface_name: "foo:bar/baz@0.1.0".into(),
+            },
+        ];
+        let err = validator.validate_structure(&plan).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::PlanInvalidSchema), "{:?}", err);
     }
 }

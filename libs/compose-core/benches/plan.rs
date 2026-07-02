@@ -36,6 +36,7 @@ fn sample_plan() -> PlanV1 {
         secrets: vec![],
         policy: Policy::default(),
         linkage: Linkage::Static,
+        explicit_exports: vec![],
     }
 }
 

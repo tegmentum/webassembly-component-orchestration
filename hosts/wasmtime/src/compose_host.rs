@@ -419,6 +419,7 @@ pub fn sample_plan() -> exports::sys::compose::plan::PlanV1 {
             },
         },
         linkage: t::LinkageMode::Static,
+        explicit_exports: vec![],
     }
 }
 
@@ -511,6 +512,7 @@ pub fn sample_plan_with_digest(component_digest: Vec<u8>) -> exports::sys::compo
             },
         },
         linkage: t::LinkageMode::Static,
+        explicit_exports: vec![],
     }
 }
 

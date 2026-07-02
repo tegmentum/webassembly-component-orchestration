@@ -111,6 +111,7 @@ fn runtime_linked_plan_runs_consumer_with_bound_provider() {
         secrets: vec![],
         policy: runtime_policy(),
         linkage: Linkage::Runtime,
+        explicit_exports: vec![],
     };
 
     let result = host
@@ -187,6 +188,7 @@ fn runtime_linked_plan_rejects_untrusted_provider() {
         secrets: vec![],
         policy: runtime_policy(),
         linkage: Linkage::Runtime,
+        explicit_exports: vec![],
     };
 
     let err = host
@@ -263,6 +265,7 @@ fn runtime_linked_plan_rejects_multiple_bindings() {
         secrets: vec![],
         policy: runtime_policy(),
         linkage: Linkage::Runtime,
+        explicit_exports: vec![],
     };
 
     let err = host
@@ -334,6 +337,7 @@ fn guest_driven_dlopen_runs_through_run_cli() {
         secrets: vec![],
         policy: runtime_policy(),
         linkage: Linkage::Runtime,
+        explicit_exports: vec![],
     };
 
     let result = host

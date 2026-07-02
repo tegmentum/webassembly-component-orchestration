@@ -30,6 +30,23 @@ interface plan {
     backend-uri: string,
   }
 
+  /// Explicit re-export of a non-root plug's interface.
+  ///
+  /// The socket (root) is auto-exported by the composer; explicit-
+  /// exports surface additional interfaces from a named plug at the
+  /// composed component's outer world. Required when a host needs to
+  /// call into a plug's export directly (e.g. `sqlink:wasm/dispatch-
+  /// bridge@0.1.0` on the sqlite-lib plug) rather than through the
+  /// root.
+  record explicit-export {
+    /// Component id (in the plan's components list) whose export is
+    /// being surfaced.
+    source-instance: component-id,
+    /// Fully qualified WIT interface name (e.g.
+    /// "sqlite:extension/types@0.1.0").
+    interface-name: string,
+  }
+
   /// Composition plan (version 1)
   record plan-v1 {
     /// Plan version (must be "1")
@@ -46,6 +63,10 @@ interface plan {
     policy: policy,
     /// Linking strategy (static composition vs runtime linking).
     linkage: linkage-mode,
+    /// Additional non-root exports to surface at the composed
+    /// component's outer world. Empty list is the default and keeps
+    /// pre-`explicit-exports` plan canonical encodings byte-identical.
+    explicit-exports: list<explicit-export>,
   }
 
   /// Serialize a plan to canonical CBOR bytes

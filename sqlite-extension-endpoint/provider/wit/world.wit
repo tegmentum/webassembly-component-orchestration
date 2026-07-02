@@ -97,3 +97,14 @@ world provider-dotcmd {
   import sqlite:extension/scalar-function@1.0.0;
   import sqlite:extension/dot-command@1.0.0;
 }
+
+/// Reentrant-scalar extensions (#220): scalar surface PLUS sqlite:extension/spi
+/// (the extension re-enters SQLite). The provider satisfies spi by forwarding
+/// SQL to the engine provider via compose:dynlink/linker (#225/#228 bridge).
+world provider-reentrant-scalar {
+  export endpoint;
+  export sqlite:extension/spi@1.0.0;
+  import linker;
+  import sqlite:extension/metadata@1.0.0;
+  import sqlite:extension/scalar-function@1.0.0;
+}

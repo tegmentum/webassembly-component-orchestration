@@ -23,6 +23,7 @@ use envelope::*;
     feature = "vtab-mut",
     feature = "hooks",
     feature = "dotcmd",
+    feature = "reentrant-scalar",
 )))]
 compile_error!("select exactly one shape feature: scalar|aggregate|collation|vtab|vtab-mut|hooks|dotcmd");
 
@@ -811,6 +812,97 @@ mod shape {
                 other => Err(unknown(other)),
             }
         }
+    }
+    export!(Provider);
+}
+
+// ---- Task #220: reentrant-scalar shape -------------------------------------
+// Scalar declarative surface + sqlite:extension/spi, satisfied by forwarding
+// SQL reentrancy to the engine provider through compose:dynlink/linker.
+#[cfg(feature = "reentrant-scalar")]
+mod shape {
+    use super::envelope::*;
+    provider_impl!("provider-reentrant-scalar");
+    sqlvalue_conv!();
+
+    impl Guest for Provider {
+        fn handle(method: String, payload: Vec<u8>) -> Result<Vec<u8>, Error> {
+            common_methods!(method.as_str(), &payload);
+            match method.as_str() {
+                "call" => {
+                    let req: CallReq = decode(&payload)?;
+                    match sqlite::extension::scalar_function::call(req.func_id, &args_to_wit(&req.args)) {
+                        Ok(v) => encode(&from_wit(v)),
+                        Err(m) => Err(err(ErrorCode::ExecTrap, format!("scalar call: {m}"))),
+                    }
+                }
+                other => Err(unknown(other)),
+            }
+        }
+    }
+
+    // ---- spi export: forward to the engine provider via the linker ----------
+    use compose::dynlink::linker::{resolve_by_id, Instance};
+    use sqlite::extension::types::{QueryResult, SqliteError};
+    use ciborium::value::Value as C;
+
+    fn se(m: String) -> SqliteError { SqliteError { code: 1, extended_code: 1, message: m } }
+    fn eng() -> Result<Instance, SqliteError> {
+        resolve_by_id("engine").map_err(|e| se(format!("resolve engine: {}", e.message)))
+    }
+    fn ienc(v: &C) -> Vec<u8> { let mut b = Vec::new(); let _ = ciborium::ser::into_writer(v, &mut b); b }
+    fn idec(b: &[u8]) -> C { ciborium::de::from_reader(b).unwrap_or(C::Null) }
+    fn ifield<'a>(m: &'a C, k: &str) -> Option<&'a C> {
+        if let C::Map(kv) = m { kv.iter().find(|(a,_)| matches!(a, C::Text(t) if t==k)).map(|(_,v)| v) } else { None }
+    }
+    fn as_i64(v: &C) -> i64 { if let C::Integer(i) = v { (*i).try_into().unwrap_or(0) } else { 0 } }
+    fn wit_to_c(v: &WitVal) -> C {
+        match v {
+            WitVal::Null => C::Null,
+            WitVal::Integer(i) => C::Integer((*i).into()),
+            WitVal::Real(r) => C::Float(*r),
+            WitVal::Text(s) => C::Text(s.clone()),
+            WitVal::Blob(b) => C::Bytes(b.clone()),
+            _ => C::Null,
+        }
+    }
+    fn call_eng(method: &str, req: &C) -> Result<C, SqliteError> {
+        let out = eng()?.invoke(method, &ienc(req)).map_err(|e| se(format!("engine.{method}: {}", e.message)))?;
+        Ok(idec(&out))
+    }
+    fn getter(method: &str) -> i64 {
+        eng().ok().and_then(|i| i.invoke(method, &[]).ok()).map(|o| as_i64(&idec(&o))).unwrap_or(0)
+    }
+
+    impl exports::sqlite::extension::spi::Guest for Provider {
+        fn execute(sql: String, params: Vec<WitVal>) -> Result<QueryResult, SqliteError> {
+            let req = C::Map(vec![(C::Text("sql".into()), C::Text(sql)),
+                                  (C::Text("params".into()), C::Array(params.iter().map(wit_to_c).collect()))]);
+            let r = call_eng("execute", &req)?;
+            Ok(QueryResult { columns: vec![], rows: vec![],
+                changes: ifield(&r,"changes").map(as_i64).unwrap_or(0),
+                last_insert_rowid: ifield(&r,"last-rowid").map(as_i64).unwrap_or(0) })
+        }
+        fn execute_batch(sql: String) -> Result<i64, SqliteError> {
+            let r = call_eng("execute-batch", &C::Map(vec![(C::Text("sql".into()), C::Text(sql))]))?;
+            Ok(ifield(&r,"changes").map(as_i64).unwrap_or_else(|| as_i64(&r)))
+        }
+        fn execute_scalar(_sql: String, _params: Vec<WitVal>) -> Result<WitVal, SqliteError> { Err(se("execute-scalar: not yet forwarded".into())) }
+        fn execute_multi(_sql: String, _named: Vec<exports::sqlite::extension::spi::NamedParam>) -> Result<Vec<QueryResult>, SqliteError> { Err(se("execute-multi unsupported".into())) }
+        fn changes() -> i64 { getter("changes") }
+        fn total_changes() -> i64 { getter("total-changes") }
+        fn last_insert_rowid() -> i64 { getter("last-insert-rowid") }
+        fn current_memory_used() -> i64 { getter("current-memory-used") }
+        fn list_vfs() -> Vec<String> { vec![] }
+        fn vfs_name(_db: String) -> Result<String, SqliteError> { Err(se("vfs-name unsupported".into())) }
+        fn serialize_db(_db: String) -> Result<Vec<u8>, SqliteError> { Err(se("serialize-db unsupported".into())) }
+        fn deserialize_db(_db: String, _bytes: Vec<u8>) -> Result<(), SqliteError> { Err(se("deserialize-db unsupported".into())) }
+        fn backup_into(_a: String, _b: String, _c: String) -> Result<(), SqliteError> { Err(se("backup-into unsupported".into())) }
+        fn restore_from(_a: String, _b: String, _c: String) -> Result<(), SqliteError> { Err(se("restore-from unsupported".into())) }
+        fn set_busy_timeout(_ms: i32) -> Result<(), SqliteError> { Err(se("set-busy-timeout unsupported".into())) }
+        fn limit(_cat: i32, _val: i32) -> i32 { -1 }
+        fn db_config_bool(_op: i32, _set: bool, _val: bool) -> Result<bool, SqliteError> { Err(se("db-config-bool unsupported".into())) }
+        fn open_db(_path: String) -> Result<(), SqliteError> { Err(se("open-db unsupported".into())) }
     }
     export!(Provider);
 }

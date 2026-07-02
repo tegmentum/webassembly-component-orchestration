@@ -23,6 +23,7 @@ serde = { version = "1", features = ["derive"] }
 # a `generate!` world; the bridging dispatch table is shared across all.
 default = ["scalar"]
 scalar = []
+reentrant-scalar = []
 aggregate = []
 collation = []
 vtab = []

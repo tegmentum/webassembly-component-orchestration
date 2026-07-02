@@ -176,9 +176,15 @@ impl EmitHandler {
             component_map.insert(comp.id.clone(), bytes);
         }
 
-        // Step 2: If there's only one component (the root) and no bindings,
-        // return it directly without composition
-        if plan.components.len() == 1 && plan.bindings.is_empty() {
+        // Step 2: If there's only one component (the root), no bindings,
+        // and no explicit re-exports, return it directly without
+        // composition. Explicit re-exports need the wac-graph path so
+        // each named interface is validated against the root's real
+        // exports even when there's nothing to wire.
+        if plan.components.len() == 1
+            && plan.bindings.is_empty()
+            && plan.explicit_exports.is_empty()
+        {
             self.events
                 .info("single component, no composition needed", None);
             return component_map.remove(&plan.root).ok_or_else(|| {

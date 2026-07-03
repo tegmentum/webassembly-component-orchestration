@@ -475,6 +475,55 @@ fn core_error(code: compose_core::types::ErrorCode, message: String) -> compose_
     compose_core::types::Error::new(code, message)
 }
 
+/// Append whatever the guest managed to write to stdout/stderr before it
+/// died to a trap message. Real infrastructure traps still return `Err`,
+/// but the captured stdio is preserved in the error text so callers can
+/// diagnose the failure — otherwise the guest's output vanishes with the
+/// error path.
+fn trap_msg_with_stdio(
+    prefix: &str,
+    e: &wasmtime::Error,
+    stdout: &MemoryOutputPipe,
+    stderr: &MemoryOutputPipe,
+) -> String {
+    let stdout_bytes = stdout.contents();
+    let stderr_bytes = stderr.contents();
+    let stdout_str = String::from_utf8_lossy(&stdout_bytes);
+    let stderr_str = String::from_utf8_lossy(&stderr_bytes);
+    let mut msg = format!("{prefix}: {e:?}");
+    let stdout_trim = stdout_str.trim();
+    if !stdout_trim.is_empty() {
+        msg.push_str("\nguest stdout:\n");
+        msg.push_str(stdout_trim);
+    }
+    let stderr_trim = stderr_str.trim();
+    if !stderr_trim.is_empty() {
+        msg.push_str("\nguest stderr:\n");
+        msg.push_str(stderr_trim);
+    }
+    msg
+}
+
+/// Classify a `wasi:cli/run` trap. `proc_exit(n)` surfaces as an `I32Exit`
+/// trap — that's the guest making a controlled exit (e.g. Python's
+/// `sys.exit`) and should be treated as a normal non-zero exit, not lost
+/// down the error path. Everything else is a real trap and gets the
+/// captured stdio tails folded into the error message.
+fn exit_or_trap(
+    e: wasmtime::Error,
+    who: &str,
+    stdout: &MemoryOutputPipe,
+    stderr: &MemoryOutputPipe,
+) -> Result<u32, compose_core::types::Error> {
+    if let Some(exit) = e.downcast_ref::<wasmtime_wasi::I32Exit>() {
+        return Ok(exit.0 as u32);
+    }
+    Err(core_error(
+        compose_core::types::ErrorCode::ExecTrap,
+        trap_msg_with_stdio(&format!("{who} run trapped"), &e, stdout, stderr),
+    ))
+}
+
 /// Epoch ticker granularity. The wall-clock timeout resolution is one
 /// tick; deadlines are rounded up to whole ticks.
 pub const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(10);
@@ -777,14 +826,13 @@ pub fn run_cli_with_endpoint(
             format!("failed to instantiate consumer command: {e:?}"),
         )
     })?;
-    let exit_code = match command.wasi_cli_run().call_run(&mut store).map_err(|e| {
-        core_error(
-            CoreErrorCode::ExecTrap,
-            format!("consumer run trapped: {e:?}"),
-        )
-    })? {
-        Ok(()) => 0u32,
-        Err(()) => 1u32,
+    let exit_code = match command.wasi_cli_run().call_run(&mut store) {
+        Ok(Ok(())) => 0u32,
+        Ok(Err(())) => 1u32,
+        Err(e) => match exit_or_trap(e, "consumer", &stdout, &stderr) {
+            Ok(code) => code,
+            Err(err) => return Err(err),
+        },
     };
 
     drop(store);
@@ -885,19 +933,10 @@ pub fn run_cli_dlopen(
     let exit_code = match command.wasi_cli_run().call_run(&mut store) {
         Ok(Ok(())) => 0u32,
         Ok(Err(())) => 1u32,
-        Err(e) => {
-            // Drain captured stderr so the user sees Python's exception
-            // text alongside the wasm-side backtrace.
-            let stderr_tail = stderr.contents();
-            let tail_str = String::from_utf8_lossy(&stderr_tail);
-            let tail_str = tail_str.trim();
-            let msg = if tail_str.is_empty() {
-                format!("guest run trapped: {e:?}")
-            } else {
-                format!("guest run trapped: {e:?}\nguest stderr:\n{tail_str}")
-            };
-            return Err(core_error(CoreErrorCode::ExecTrap, msg));
-        }
+        Err(e) => match exit_or_trap(e, "guest", &stdout, &stderr) {
+            Ok(code) => code,
+            Err(err) => return Err(err),
+        },
     };
 
     let resolved = store.data().resolved_providers().clone();
@@ -982,12 +1021,26 @@ pub fn run_cli_command(
         Ok(Ok(())) => 0u32,
         Ok(Err(())) => 1u32,
         Err(e) => {
+            // proc_exit(n) surfaces as an I32Exit trap — that's a
+            // controlled exit (Python's sys.exit path), not a real trap.
+            if let Some(exit) = e.downcast_ref::<wasmtime_wasi::I32Exit>() {
+                let code = exit.0 as u32;
+                drop(store);
+                return Ok(RuntimeLinkOutput {
+                    exit_code: code,
+                    stdout: stdout.contents().to_vec(),
+                    stderr: stderr.contents().to_vec(),
+                });
+            }
             let code = match e.downcast_ref::<wasmtime::Trap>() {
                 Some(wasmtime::Trap::OutOfFuel) => CoreErrorCode::ExecResourceExhausted,
                 Some(wasmtime::Trap::Interrupt) => CoreErrorCode::ExecTimeout,
                 _ => CoreErrorCode::ExecTrap,
             };
-            return Err(core_error(code, format!("command run failed: {e:?}")));
+            return Err(core_error(
+                code,
+                trap_msg_with_stdio("command run failed", &e, &stdout, &stderr),
+            ));
         }
     };
 

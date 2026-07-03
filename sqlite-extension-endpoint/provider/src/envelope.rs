@@ -44,14 +44,21 @@ pub enum SqlValue {
     Integer(i64),
     Real(f64),
     Text(String),
-    Blob(Vec<u8>),
+    // `#[serde(with = "serde_bytes")]` makes ciborium render this as a
+    // CBOR byte string (major type 2) rather than an array of integers
+    // (major type 4). The sqlink-host `cbor_to_sqlval` decoder matches
+    // only on `Cbor::Bytes`, so without this every WKB return silently
+    // decodes to an empty blob.
+    Blob(#[serde(with = "serde_bytes")] Vec<u8>),
     /// The @1.0.0 `wit-value` arm — a structurally-identified,
     /// canonical-CBOR-encoded WIT record. Bridged opaquely: the
     /// provider ferries (type_id, bytes, symbolic_name) without
     /// decoding. (Decoding needs the extension's serde-ops imports —
     /// out of scope for the declarative bridge.)
     WitValue {
+        #[serde(with = "serde_bytes")]
         type_id: Vec<u8>,
+        #[serde(with = "serde_bytes")]
         bytes: Vec<u8>,
         symbolic_name: String,
     },

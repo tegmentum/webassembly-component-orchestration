@@ -17,6 +17,13 @@ wit-bindgen = "0.44"
 wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
 ciborium = "0.2"
 serde = { version = "1", features = ["derive"] }
+# Force `Vec<u8>` fields (SqlValue::Blob, WitValue payload bytes) to
+# serialize as CBOR byte strings rather than arrays-of-integers.
+# Without this, ciborium's serde adapter renders every list<u8>
+# return as a Cbor::Array which the sqlink-host `cbor_to_sqlval`
+# decoder rejects as an empty blob — silently corrupting every
+# WKB / WKB-encoded aggregate return end-to-end.
+serde_bytes = "0.11"
 
 [features]
 # Exactly ONE shape feature must be selected at build time. Each selects

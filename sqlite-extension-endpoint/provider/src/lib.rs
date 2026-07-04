@@ -862,6 +862,16 @@ mod shape {
                             exit_code: res.exit_code,
                             stdout: STDOUT.with(|s| s.borrow().clone()),
                             stderr: STDERR.with(|s| s.borrow().clone()),
+                            // Surface the state-deltas (`.nullvalue`, `.echo`, ...)
+                            // so the host can apply them to the cli session.
+                            state_deltas: res
+                                .state_deltas
+                                .into_iter()
+                                .map(|d| StateDelta {
+                                    key: d.key,
+                                    value: from_wit(d.value),
+                                })
+                                .collect(),
                         }),
                         Err(e) => Err(err(
                             ErrorCode::ExecTrap,

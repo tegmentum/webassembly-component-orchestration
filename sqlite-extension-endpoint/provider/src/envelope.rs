@@ -391,6 +391,14 @@ pub struct DotInvokeReq {
     pub bail_on_error: bool,
 }
 
+/// One state update from a dot-command's invoke-result. `value` is the
+/// SqlValue (CBOR-tagged); the host maps it to the cli's value-json wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateDelta {
+    pub key: String,
+    pub value: SqlValue,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DotInvokeResp {
     /// Trailing text returned from invoke-result.text.
@@ -401,4 +409,8 @@ pub struct DotInvokeResp {
     pub stdout: String,
     /// Everything streamed via the captured cli-stderr.
     pub stderr: String,
+    /// State updates the cli applies after the command returns (`.nullvalue`,
+    /// `.echo`, `.headers`, `.parameter set`, ...). Was dropped pre-fix.
+    #[serde(default)]
+    pub state_deltas: Vec<StateDelta>,
 }

@@ -1,0 +1,16 @@
+[package]
+name = "compose-rdf"
+version = "0.0.1"
+edition = "2021"
+authors = ["Zachary Whitley <maintainer@example.com>"]
+description = "Read a composition PlanV1 from RDF triples (SPARQL binding-set rows)"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+tracing = "0.1"
+compose-core = { path = "../compose-core" }
+
+[dev-dependencies]
+serde_json = "1"

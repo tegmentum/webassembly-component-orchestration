@@ -5,6 +5,7 @@ members = [
     "conformance/runner",
     "libs/compose-core",
     "libs/compose-fetcher",
+    "libs/compose-rdf",
     "libs/compose-store-sqlite",
     "libs/pkcs11-host-adapter",
     "libs/trust-backends",

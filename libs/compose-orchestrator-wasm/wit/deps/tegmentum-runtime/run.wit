@@ -1,0 +1,48 @@
+package tegmentum:runtime@0.1.0;
+
+/// Minimal one-shot invocation surface.
+///
+/// The tegmentum:runtime package has two interfaces that answer
+/// different questions:
+///
+/// * `control` — rich management API. Own the runtime, own the
+///   component, own the instance, invoke arbitrary exports multiple
+///   times, share state. Use when you're orchestrating.
+///
+/// * `run` — this interface. One-shot execution. Bytes + caps in,
+///   result out. No resource ownership, no explicit lifecycle. Use
+///   when you just want to fire-and-forget: CI step runners, one-shot
+///   smoke tests, "evaluate this snippet" for a coding-agent tool.
+///
+/// The split mirrors the host-side split between `host:bootstrap`
+/// (one-shot handoff) and `host:wasmtime` (rich runtime driver).
+/// Both flavors are legitimate; different consumers need different
+/// shapes.
+///
+/// Stability: `run` should stay at 0.1.x for a long time. Growth
+/// here is a smell — if a consumer needs more than fire-and-forget,
+/// they've outgrown `run` and should target `control`.
+interface run {
+    use types.{capability, value, error};
+
+    /// Execute a component with the given cap set.
+    ///
+    /// The adapter:
+    ///   1. Creates a fresh runtime with default resource limits.
+    ///   2. Compiles the component bytes.
+    ///   3. Instantiates it with the granted caps.
+    ///   4. Invokes the standard entry point — the exports
+    ///      wasi:cli/run/run OR a top-level "run" export, in that
+    ///      order. Returns not-found if neither is present.
+    ///   5. Returns the entry-point's result (or `v-null` for a
+    ///      no-value ok).
+    ///   6. Drops runtime + component + instance on return.
+    ///
+    /// One-shot semantics on purpose. If you need to invoke a specific
+    /// non-standard export, or invoke multiple times against the same
+    /// instance, use `control`.
+    exec: func(
+        component-bytes: list<u8>,
+        caps: list<capability>,
+    ) -> result<value, error>;
+}

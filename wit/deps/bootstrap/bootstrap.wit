@@ -1,0 +1,43 @@
+package host:bootstrap@0.1.0;
+
+/// One-shot handoff surface from the native embedder to the control
+/// plane component. Deliberately tiny and stable — everything the
+/// control plane needs to configure and DRIVE wasmtime comes from
+/// `host:wasmtime`; the caps it was granted come from `host:caps`;
+/// everything it needs to know as *initial data* is here.
+///
+/// Growth here is a smell. If a proposal wants to add ongoing IPC,
+/// message dispatch, or state introspection to bootstrap, it belongs
+/// in `host:control-plane` instead — the handoff contract is one-shot
+/// by design. If it wants to grow cap-taxonomy operations, it belongs
+/// in `host:caps` — different concern, different lifecycle.
+interface bootstrap {
+    record artifact-descriptor {
+        /// Name the control plane uses to fetch this artifact.
+        name: string,
+        /// Role hint — control-plane-specific taxonomy.
+        /// Convention values: `"initial-module"`, `"policy-doc"`,
+        /// `"workload-spec"`, `"config"`. Control planes may define their own.
+        role: string,
+        /// Content digest (e.g., `"blake3:abc..."`). Empty string if the
+        /// embedder didn't compute one.
+        digest: string,
+        /// Size in bytes. Zero if unknown.
+        size: u64,
+    }
+
+    /// Embedder-provided artifacts the control plane will work with.
+    /// Content-addressed by `name`; `role` lets the control plane pick
+    /// out `"initial-module"` / `"policy-doc"` / `"workload-spec"`
+    /// without hardcoding order. Bytes are streamed on demand via
+    /// `get-artifact` — don't ship everything upfront.
+    list-artifacts: func() -> list<artifact-descriptor>;
+
+    /// Fetch an artifact by name. Returns an error string if the name
+    /// isn't in `list-artifacts`.
+    get-artifact: func(name: string) -> result<list<u8>, string>;
+
+    /// Embedder-provided argv-analogue. Control plane defines its own
+    /// semantics. Standard shape so tooling can inspect / mutate.
+    args: func() -> list<string>;
+}

@@ -1,0 +1,78 @@
+package tegmentum:runtime@0.1.0;
+
+/// Portable value / capability / error types for the tegmentum runtime
+/// API. Deliberately runtime-agnostic — nothing here leaks wasmtime,
+/// WAMR, WasmEdge, or any other backend's concepts.
+///
+/// Consumers targeting `tegmentum:runtime` see the SAME shape whether
+/// the adapter underneath is wasmtime, WAMR, or a browser worker. If a
+/// consumer needs a backend-specific primitive (wasmtime fuel, WAMR
+/// gas subtleties), they import that backend's `host:*` interface
+/// directly and accept the portability cost.
+interface types {
+    /// Runtime-agnostic value type — what components pass through the
+    /// invoke API. Structural, not backend-specific.
+    ///
+    /// Kept small and JSON-encodable on purpose. Richer types (records,
+    /// variants, GC refs) get encoded into `v-bytes` or `v-string` by
+    /// convention; the portable API does not try to reify the full
+    /// component-model type system.
+    variant value {
+        v-i32(s32),
+        v-i64(s64),
+        v-f32(f32),
+        v-f64(f64),
+        v-string(string),
+        v-bytes(list<u8>),
+        v-null,
+    }
+
+    /// A named capability the adapter grants to an instance.
+    ///
+    /// `name` is a portable label — `"wasi:filesystem"`, `"wasi:network"`,
+    /// `"nested-components"`, etc. The adapter maps labels to its
+    /// backend's mechanism. `scope` optionally narrows the grant — for
+    /// filesystem it might be a preopen path; for network, an allow-list.
+    /// Interpretation is adapter-specific but the SHAPE is portable.
+    record capability {
+        name: string,
+        scope: option<string>,
+    }
+
+    /// Resource caps applied to a runtime. Both are optional — `none`
+    /// means "no cap." The adapter maps these to backend primitives:
+    /// wasmtime → StoreLimits + fuel; WAMR → equivalent gas API.
+    record resource-limits {
+        /// Ceiling on total linear memory across all instances in this
+        /// runtime, in bytes.
+        max-memory-bytes: option<u64>,
+        /// Abstract "cycles" the runtime spends per invocation. When
+        /// exhausted, invoke returns `resource-exhausted`. Wasmtime
+        /// maps this to fuel; other backends to their equivalent gas
+        /// mechanism.
+        cycle-budget: option<u64>,
+    }
+
+    record error {
+        message: string,
+        kind: error-kind,
+    }
+
+    /// Portable error taxonomy. Every backend maps its native errors
+    /// into these categories.
+    enum error-kind {
+        /// Requested resource (component export, capability, etc.)
+        /// doesn't exist.
+        not-found,
+        /// Resource already exists — creating a duplicate.
+        already-exists,
+        /// Operation not allowed under current capability grants.
+        permission-denied,
+        /// Fuel / memory / instance-count exhausted.
+        resource-exhausted,
+        /// Argument shape didn't match what was expected.
+        invalid-argument,
+        /// Backend surfaced an error that doesn't map to the above.
+        internal,
+    }
+}

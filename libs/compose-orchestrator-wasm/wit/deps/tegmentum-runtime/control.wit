@@ -1,0 +1,63 @@
+package tegmentum:runtime@0.1.0;
+
+/// Product-facing runtime control surface.
+///
+/// Portable across WASM runtime backends. A control-plane component
+/// targeting this interface can be moved between wasmtime, WAMR,
+/// WasmEdge, browser workers, and Firecracker with only an adapter
+/// swap on the host side — no component recompile.
+///
+/// This is the interface control planes SHOULD target for portability.
+/// The lower-level `host:wasmtime` interface is available too but ties
+/// the guest to wasmtime specifically; use it only when accessing
+/// wasmtime-specific primitives (fuel semantics, cranelift settings,
+/// specific interrupt shapes) that don't have portable analogues.
+///
+/// Design rule: methods here express POLICY-shaped primitives. If a
+/// method's shape leaks a backend-specific concept (a wasmtime type,
+/// a WAMR enum), it doesn't belong.
+interface control {
+    use types.{value, capability, resource-limits, error};
+
+    /// A WASM runtime instance. One process may host many runtimes
+    /// with different capability profiles, resource limits, or
+    /// backend adapters.
+    ///
+    /// Runtime scope defines the isolation boundary — every component
+    /// loaded into a runtime shares its resource pool and cap set.
+    /// Cross-runtime calls are not modeled here.
+    resource runtime {
+        /// Create a fresh runtime with the given resource caps.
+        /// Cannot fail — invalid limits are clamped or ignored by
+        /// the adapter with a note.
+        constructor(limits: resource-limits);
+    }
+
+    /// A compiled, validated component ready to instantiate. Sharing a
+    /// component across multiple instantiations amortizes compile cost.
+    resource component {
+        /// Compile a component from its binary encoding.
+        from-bytes: static func(runtime: borrow<runtime>, bytes: list<u8>) -> result<component, error>;
+
+        /// Names of the top-level exports the component declares.
+        export-names: func() -> list<string>;
+    }
+
+    /// A live component instance. Owns its capability set for its
+    /// lifetime. Drop unroots the instance and its resources.
+    resource instance {
+        /// Instantiate a compiled component with a specific cap set.
+        /// The adapter enforces that caps not in the granted set fail
+        /// at instantiate-time (not at first-use), so misconfiguration
+        /// surfaces early.
+        from-component: static func(
+            runtime: borrow<runtime>,
+            component: borrow<component>,
+            caps: list<capability>,
+        ) -> result<instance, error>;
+
+        /// Invoke a named export. Argument and result types are opaque
+        /// `value` — richer types are convention-encoded.
+        invoke: func(export-name: string, args: list<value>) -> result<list<value>, error>;
+    }
+}

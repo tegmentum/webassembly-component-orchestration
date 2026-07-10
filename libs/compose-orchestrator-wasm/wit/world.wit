@@ -62,6 +62,32 @@ world orchestrator {
     // sqlite engine — only the append/verify surface.
     import secure-log:log/log@0.1.0;
 
+    // Portable runtime primitives. The orchestrator can compile and
+    // instantiate components via the tegmentum:runtime frontend
+    // regardless of what backend (wasmtime, WAMR, WasmEdge) is
+    // underneath. This is what lets the orchestrator be portable
+    // across runtimes — it never imports host:wasmtime directly.
+    //
+    // Loaded FIRST by the outer embedder: the backend adapter
+    // (e.g. wasmtime-adapter.wasm) exports tegmentum:runtime; the
+    // orchestrator sits on top. If a WAMR adapter ever ships, the
+    // orchestrator wasm runs against it unchanged.
+    //
+    // NOTE: these imports are DECLARED here as architectural intent.
+    // Until the orchestrator's Rust impl actually calls into
+    // tegmentum:runtime (e.g., for in-guest instantiation of a
+    // composed artifact), Rust dead-code elimination will strip the
+    // imports from the compiled component. Once the impl catches up,
+    // the imports materialize automatically.
+    import tegmentum:runtime/types@0.1.0;
+    import tegmentum:runtime/control@0.1.0;
+
+    // Handoff surface — the outer embedder passes the manifest (and
+    // any other startup data) through here. The orchestrator reads
+    // its inputs by name. Same "declared but not yet exercised"
+    // caveat applies until the impl uses it.
+    import host:bootstrap/bootstrap@0.1.0;
+
     export smoke;
 
     // First real sys:compose export. Plan (de)serialization +

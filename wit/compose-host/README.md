@@ -67,16 +67,33 @@ is a new conformance burden for every host implementation. Resist.
 
 ## Status
 
-Draft. The interfaces compile against `wasm-tools resolve` /
-`wit-parser`, but no host has implemented them yet — `hosts/wasmtime`
-currently still calls the Rust `compose-core` library directly rather
-than going through this WIT surface. Producing a wasm component that
-exports `orchestrator` is the next milestone.
+One host, one guest end-to-end.
 
-The `invoker` interface in particular hinges on a component-model
-gap: WIT can express the resource handle and the named-export
-lookup, but cannot yet express invocation polymorphic over arbitrary
-canonical-ABI value types. Until that gap closes, `call-with-cbor`
-is a pragmatic stand-in: both sides agree on a schema-less wire
-format. Replace it with structured invocation as soon as the
-component model can express it.
+- **Host side.** `hosts/wasmtime/src/compose_host.rs` implements
+  every interface in this package via `wasmtime::component::bindgen!`:
+  `runner.run-cli` (WASI CLI with args, env, stdio, and enforced
+  limits), `runtime-info.get-fingerprint` /
+  `.supported-imports`, and the full `invoker` lifecycle —
+  `instantiate`, `list-exports`, `get-export`, `call-with-cbor`, and
+  `drop` — all running on the shared dynlink instantiation base with a
+  fuel + epoch sandbox engine. `runtime-info.engine-features-hash`
+  and `.supported-imports` return placeholder shapes (empty hash,
+  a hard-coded WASI set); their content is the next milestone.
+- **Guest side.** `libs/compose-orchestrator-wasm` builds a wasm
+  component that declares the `orchestrator` world and imports this
+  package via `wit-bindgen`. See `hosts/wasmtime`'s
+  `orchestrator_smoke` integration test for the round-trip.
+- **Portability.** Only one host and one guest exist. The point of
+  keeping this package small is that additional hosts (a browser
+  runtime, a JCO-transpiled backend) can implement the same surface;
+  `hosts/browser/` already does the parallel work for
+  `compose:dynlink`.
+
+The `invoker` interface still relies on `call-with-cbor` as its
+structured-invocation path. This is a pragmatic stand-in for a
+component-model gap: WIT can express the resource handle and the
+named-export lookup, but cannot yet express invocation polymorphic
+over arbitrary canonical-ABI value types. Replace `call-with-cbor`
+with structured invocation as soon as the component model can express
+it. The CBOR wire conventions live in
+`hosts/wasmtime/src/cbor_val.rs`.

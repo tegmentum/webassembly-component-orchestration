@@ -1,0 +1,33 @@
+[package]
+name = "compose-fetcher"
+version = "0.0.1"
+edition = "2021"
+authors = ["Zachary Whitley <maintainer@example.com>"]
+description = "Blocking multi-scheme fetcher for composition-plan artifacts (file, http(s), ipfs gateway, oci)"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+tracing = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+dirs = "5"
+
+# Blocking HTTP client — no tokio/async runtime, so the composition path can
+# be driven from a synchronous host-callback context (which is how the wf
+# plugin calls into the runtime).
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+# OCI distribution is optional so downstreams that only want file/http don't
+# have to pull in the whole rustls + protobuf stack. Left off by default;
+# enable via the "oci" feature.
+oci-client = { version = "0.15", optional = true, default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", optional = true, features = ["rt", "macros"] }
+
+[features]
+default = []
+oci = ["dep:oci-client", "dep:tokio"]
+
+[dev-dependencies]
+tempfile = "3"

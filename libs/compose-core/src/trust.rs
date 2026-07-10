@@ -167,6 +167,20 @@ impl TrustStore {
         self.trusted.lock().unwrap().contains_key(digest)
     }
 
+    /// List every digest currently in the trusted set together with the
+    /// verification metadata recorded when it was trusted.
+    ///
+    /// Output ordering is not defined (backed by a `HashMap`); callers that
+    /// need a stable ordering should sort by digest.
+    pub fn list_trusted(&self) -> Vec<(Digest, VerificationMetadata)> {
+        self.trusted
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(d, m)| (d.clone(), m.clone()))
+            .collect()
+    }
+
     /// Add a digest to the trusted set
     pub fn trust_digest(
         &self,

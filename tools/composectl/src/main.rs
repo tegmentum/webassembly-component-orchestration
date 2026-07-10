@@ -112,74 +112,226 @@ fn handle_exec(host: &CompositorHost, action: ExecAction, _format: &OutputFormat
             Ok(())
         }
         ExecAction::Invoke { plan, export } => {
-            let _plan_data = read_plan(&plan)?;
+            let plan_data = read_plan(&plan)?;
 
-            println!("Invoking export '{}' from plan", export);
-            println!("(Full invoke implementation requires WIT interface introspection)");
+            // Invoke is the CBOR-marshalled invocation path: the caller
+            // hands `ExecHandler::invoke` a CBOR array of arguments and
+            // gets back a CBOR array of results (same wire format as
+            // `compose:host/invoker.call-with-cbor`). We don't yet expose
+            // an arg-passing flag on the CLI, so we send a canonical
+            // empty CBOR array — exports with zero params invoke, exports
+            // with params surface an "expected N argument(s), got 0"
+            // error to the user.
+            const EMPTY_CBOR_ARRAY: &[u8] = &[0x80];
+
+            let exec_handler = host.exec_handler();
+            let result = exec_handler.invoke(&plan_data, &export, EMPTY_CBOR_ARRAY)?;
+
+            println!("Invoked export '{}' ({} result bytes)", export, result.len());
+            println!("Result (CBOR, hex): {}", hex::encode(&result));
             Ok(())
         }
     }
 }
 
 fn handle_secrets(
-    _host: &CompositorHost,
+    host: &CompositorHost,
     action: SecretsAction,
-    _format: &OutputFormat,
+    format: &OutputFormat,
 ) -> Result<()> {
     match action {
         SecretsAction::List { backend } => {
-            println!(
-                "Listing secrets from backend: {:?}",
-                backend.unwrap_or_else(|| "default".to_string())
-            );
-            println!("(Secrets are managed via secret bindings in plans)");
+            let secrets = host
+                .secrets
+                .list_secrets(backend.as_ref())
+                .map_err(|e| anyhow::anyhow!("failed to list secrets: {}", e))?;
+
+            let label = backend.as_deref().unwrap_or("all backends");
+            match format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&secrets)?);
+                }
+                OutputFormat::Text => {
+                    println!("Secrets in backend '{}':", label);
+                    for id in &secrets {
+                        println!("  {}", id);
+                    }
+                    println!("\nTotal: {} secrets", secrets.len());
+                }
+                OutputFormat::Toml => {
+                    println!("{}", toml::to_string_pretty(&secrets)?);
+                }
+            }
             Ok(())
         }
         SecretsAction::Resolve { id, backend } => {
-            println!("Resolving secret '{}' from backend '{}'", id, backend);
-            println!("(Secret resolution happens at composition/execution time)");
+            // Resolving mints an opaque bearer token — the token, not the
+            // plaintext secret, is what plans reference. Printing plaintext
+            // here would defeat the point.
+            let token = host
+                .secrets
+                .resolve(&id, &backend)
+                .map_err(|e| anyhow::anyhow!("failed to resolve secret: {}", e))?;
+
+            match format {
+                OutputFormat::Json => {
+                    let payload = serde_json::json!({
+                        "id": id,
+                        "backend": backend,
+                        "token": token,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                }
+                OutputFormat::Text => {
+                    println!("Resolved secret '{}' from backend '{}'", id, backend);
+                    println!("  Token: {}", token);
+                }
+                OutputFormat::Toml => {
+                    let payload = toml::Table::from_iter([
+                        ("id".to_string(), toml::Value::String(id.clone())),
+                        ("backend".to_string(), toml::Value::String(backend.clone())),
+                        ("token".to_string(), toml::Value::String(token.clone())),
+                    ]);
+                    println!("{}", toml::to_string_pretty(&payload)?);
+                }
+            }
             Ok(())
         }
     }
 }
 
-fn handle_trust(_host: &CompositorHost, action: TrustAction, _format: &OutputFormat) -> Result<()> {
+fn handle_trust(host: &CompositorHost, action: TrustAction, format: &OutputFormat) -> Result<()> {
     match action {
         TrustAction::Verify {
             artifact,
             signature,
         } => {
-            println!("Verifying artifact: {:?}", artifact);
-            if let Some(sig) = signature {
-                println!("Using signature: {:?}", sig);
+            use sha2::{Digest as _, Sha256};
+
+            let bytes = fs::read(&artifact)
+                .with_context(|| format!("Failed to read artifact {:?}", artifact))?;
+            let digest = Sha256::digest(&bytes).to_vec();
+
+            let signature_bytes = signature
+                .as_ref()
+                .map(|p| {
+                    fs::read(p).with_context(|| format!("Failed to read signature {:?}", p))
+                })
+                .transpose()?;
+
+            let result = host
+                .trust
+                .verify(&digest, &bytes, signature_bytes.as_deref())
+                .map_err(|e| anyhow::anyhow!("verification failed: {}", e))?;
+
+            match format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+                OutputFormat::Text => {
+                    println!("Artifact: {:?}", artifact);
+                    println!("  Digest: {}", hex::encode(&digest));
+                    println!("  Verified: {}", result.verified);
+                    println!("  Signer: {}", result.metadata.signer);
+                    println!("  Backend: {}", result.metadata.backend);
+                    if let Some(ts) = result.metadata.timestamp {
+                        println!("  Timestamp: {}", ts);
+                    }
+                }
+                OutputFormat::Toml => {
+                    println!("{}", toml::to_string_pretty(&result)?);
+                }
             }
-            println!("(Trust verification requires trust backend configuration)");
             Ok(())
         }
         TrustAction::List => {
-            println!("Listing trusted artifacts");
-            println!("(Trust registry not yet implemented)");
+            // `list_trusted` returns each digest with the verification
+            // metadata recorded at trust time (HashMap-backed, so order is
+            // not stable — sort by digest so the CLI output is deterministic).
+            let mut entries = host.trust.list_trusted();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+            #[derive(serde::Serialize)]
+            struct TrustedEntry<'a> {
+                digest: String,
+                metadata: &'a compose_host_wasmtime::types::VerificationMetadata,
+            }
+            let view: Vec<TrustedEntry<'_>> = entries
+                .iter()
+                .map(|(d, m)| TrustedEntry {
+                    digest: hex::encode(d),
+                    metadata: m,
+                })
+                .collect();
+
+            match format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&view)?);
+                }
+                OutputFormat::Text => {
+                    println!("Trusted artifacts:");
+                    for entry in &view {
+                        println!(
+                            "  {}  (signer={}, backend={})",
+                            entry.digest, entry.metadata.signer, entry.metadata.backend,
+                        );
+                    }
+                    println!("\nTotal: {} trusted artifacts", view.len());
+                }
+                OutputFormat::Toml => {
+                    println!("{}", toml::to_string_pretty(&view)?);
+                }
+            }
             Ok(())
         }
     }
 }
 
 fn handle_reflect(
-    _host: &CompositorHost,
+    host: &CompositorHost,
     action: ReflectAction,
-    _format: &OutputFormat,
+    format: &OutputFormat,
 ) -> Result<()> {
     match action {
         ReflectAction::Exports { plan } => {
-            let _plan_data = read_plan(&plan)?;
-            println!("Exports from plan:");
-            println!("(Requires WIT interface introspection)");
+            let plan_data = read_plan(&plan)?;
+            let exec_handler = host.exec_handler();
+            let exports = exec_handler.list_exports(&plan_data)?;
+
+            match format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&exports)?);
+                }
+                OutputFormat::Text => {
+                    println!("Exports from plan:");
+                    for name in &exports {
+                        println!("  {}", name);
+                    }
+                    println!("\nTotal: {} exports", exports.len());
+                }
+                OutputFormat::Toml => {
+                    println!("{}", toml::to_string_pretty(&exports)?);
+                }
+            }
             Ok(())
         }
         ReflectAction::Describe { plan, export } => {
-            let _plan_data = read_plan(&plan)?;
-            println!("Describing export '{}' from plan", export);
-            println!("(Requires WIT interface introspection)");
+            let plan_data = read_plan(&plan)?;
+            let exec_handler = host.exec_handler();
+            let info = exec_handler.describe_export(&plan_data, &export)?;
+
+            match format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&info)?);
+                }
+                OutputFormat::Text => {
+                    println!("Export: {}", info.name);
+                    println!("  Signature: {}", info.type_sig);
+                }
+                OutputFormat::Toml => {
+                    println!("{}", toml::to_string_pretty(&info)?);
+                }
+            }
             Ok(())
         }
     }

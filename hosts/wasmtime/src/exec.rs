@@ -46,6 +46,127 @@ impl Mount {
     }
 }
 
+/// Enumerate callable exported functions on a compiled component without
+/// instantiating it. Mirrors the naming used by
+/// `compose:host/invoker.list-exports`: top-level exports appear under
+/// their bare name; a function inside a top-level exported interface
+/// appears as `iface#func` (one level deep).
+fn enumerate_component_exports(
+    engine: &Engine,
+    component: &Component,
+) -> Vec<(String, wasmtime::component::types::ComponentFunc)> {
+    use wasmtime::component::types::ComponentItem;
+    let mut out = Vec::new();
+    for (top, extern_) in component.component_type().exports(engine) {
+        match extern_.ty {
+            ComponentItem::ComponentFunc(cf) => out.push((top.to_string(), cf)),
+            ComponentItem::ComponentInstance(ci) => {
+                for (sub, sub_extern) in ci.exports(engine) {
+                    if let ComponentItem::ComponentFunc(cf) = sub_extern.ty {
+                        out.push((format!("{}#{}", top, sub), cf));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Render a component-model function type in WIT-ish notation, e.g.
+/// `func(msg: string) -> result<list<u8>, string>`. Purely informational
+/// (used by `describe_export`); nothing consumes it programmatically.
+fn format_func_signature(cf: &wasmtime::component::types::ComponentFunc) -> String {
+    let params = cf
+        .params()
+        .map(|(name, ty)| format!("{}: {}", name, format_component_type(&ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let results: Vec<String> = cf.results().map(|t| format_component_type(&t)).collect();
+    let ret = match results.len() {
+        0 => String::new(),
+        1 => format!(" -> {}", results[0]),
+        _ => format!(" -> ({})", results.join(", ")),
+    };
+    format!("func({}){}", params, ret)
+}
+
+/// Format a `wasmtime::component::Type` as a compact WIT-ish type
+/// expression. Nested records/variants show their case list so
+/// `describe_export` is self-contained.
+fn format_component_type(ty: &wasmtime::component::Type) -> String {
+    use wasmtime::component::Type;
+    match ty {
+        Type::Bool => "bool".into(),
+        Type::S8 => "s8".into(),
+        Type::U8 => "u8".into(),
+        Type::S16 => "s16".into(),
+        Type::U16 => "u16".into(),
+        Type::S32 => "s32".into(),
+        Type::U32 => "u32".into(),
+        Type::S64 => "s64".into(),
+        Type::U64 => "u64".into(),
+        Type::Float32 => "f32".into(),
+        Type::Float64 => "f64".into(),
+        Type::Char => "char".into(),
+        Type::String => "string".into(),
+        Type::List(l) => format!("list<{}>", format_component_type(&l.ty())),
+        Type::Tuple(t) => {
+            let inner: Vec<String> = t.types().map(|t| format_component_type(&t)).collect();
+            format!("tuple<{}>", inner.join(", "))
+        }
+        Type::Record(r) => {
+            let fields: Vec<String> = r
+                .fields()
+                .map(|f| format!("{}: {}", f.name, format_component_type(&f.ty)))
+                .collect();
+            format!("record {{ {} }}", fields.join(", "))
+        }
+        Type::Option(o) => format!("option<{}>", format_component_type(&o.ty())),
+        Type::Result(rt) => {
+            let ok = rt
+                .ok()
+                .as_ref()
+                .map(format_component_type)
+                .unwrap_or_else(|| "_".into());
+            let err = rt
+                .err()
+                .as_ref()
+                .map(format_component_type)
+                .unwrap_or_else(|| "_".into());
+            format!("result<{}, {}>", ok, err)
+        }
+        Type::Variant(v) => {
+            let cases: Vec<String> = v
+                .cases()
+                .map(|c| match c.ty {
+                    Some(ty) => format!("{}({})", c.name, format_component_type(&ty)),
+                    None => c.name.to_string(),
+                })
+                .collect();
+            format!("variant {{ {} }}", cases.join(", "))
+        }
+        Type::Enum(e) => {
+            let names: Vec<&str> = e.names().collect();
+            format!("enum {{ {} }}", names.join(", "))
+        }
+        Type::Flags(f) => {
+            let names: Vec<&str> = f.names().collect();
+            format!("flags {{ {} }}", names.join(", "))
+        }
+        Type::Map(m) => format!(
+            "map<{}, {}>",
+            format_component_type(&m.key()),
+            format_component_type(&m.value())
+        ),
+        Type::Own(_) => "own<resource>".into(),
+        Type::Borrow(_) => "borrow<resource>".into(),
+        Type::Future(_) => "future".into(),
+        Type::Stream(_) => "stream".into(),
+        Type::ErrorContext => "error-context".into(),
+    }
+}
+
 /// Fold the set of providers linked at runtime into an exec-key hasher.
 ///
 /// No-op when empty, so static-composition exec-keys are unchanged from
@@ -565,7 +686,16 @@ impl ExecHandler {
         Ok(result)
     }
 
-    /// Invoke a specific exported function by name
+    /// Invoke a specific exported function by name.
+    ///
+    /// `export_name` may be a top-level export ("foo") or an
+    /// interface-nested export in the form "iface#func" (matching
+    /// `list_exports` / `describe_export` output). Arguments are a CBOR
+    /// array marshalled against the function's component-model parameter
+    /// types by [`crate::cbor_val::decode_params`]; results are re-encoded
+    /// as CBOR by [`crate::cbor_val::encode_results`]. The wire format is
+    /// the same one used by `compose:host/invoker.call-with-cbor` in
+    /// `compose_host.rs`, so callers can round-trip through either path.
     pub fn invoke(&self, plan: &PlanV1, export_name: &str, args: &[u8]) -> Result<Vec<u8>, Error> {
         self.events.info(
             "invoking function",
@@ -611,26 +741,70 @@ impl ExecHandler {
             )
         })?;
 
-        // Get the export
-        let func = instance.get_func(&mut store, export_name).ok_or_else(|| {
+        // Resolve the export. A plain name resolves against the root
+        // (top-level exported function). An "iface#func" name selects a
+        // function of the top-level exported interface `iface` — matching
+        // the format returned by `list_exports`.
+        let (top, sub) = match export_name.split_once('#') {
+            Some((iface, func)) => (iface, Some(func)),
+            None => (export_name, None),
+        };
+        let (top_item, top_idx) =
+            instance
+                .get_export(&mut store, None, top)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::ExecMissingExport,
+                        format!("export '{}' not found", export_name),
+                    )
+                })?;
+        let func_idx = match sub {
+            Some(sub) => match instance.get_export(&mut store, Some(&top_idx), sub) {
+                Some((wasmtime::component::types::ComponentItem::ComponentFunc(_), idx)) => idx,
+                _ => {
+                    return Err(Error::new(
+                        ErrorCode::ExecMissingExport,
+                        format!("export '{}' is not a function", export_name),
+                    ))
+                }
+            },
+            None => match top_item {
+                wasmtime::component::types::ComponentItem::ComponentFunc(_) => top_idx,
+                _ => {
+                    return Err(Error::new(
+                        ErrorCode::ExecMissingExport,
+                        format!("export '{}' is not a top-level function", export_name),
+                    ))
+                }
+            },
+        };
+
+        let func = instance.get_func(&mut store, func_idx).ok_or_else(|| {
             Error::new(
                 ErrorCode::ExecMissingExport,
-                format!("export '{}' not found", export_name),
+                format!("export '{}' is not callable", export_name),
             )
         })?;
 
-        // Prepare parameters (deserialize from args bytes if needed)
-        let params = if args.is_empty() {
-            vec![]
-        } else {
-            // For now, we assume no parameters or handle bytes directly
-            // Full implementation would deserialize based on function signature
-            vec![]
+        // Decode CBOR-encoded argument array against the function's
+        // component-model parameter types (same wire format as the
+        // `compose:host/invoker.call-with-cbor` path in compose_host.rs).
+        let (param_types, result_count) = {
+            let ty = func.ty(&store);
+            let params: Vec<wasmtime::component::Type> = ty.params().map(|(_, t)| t).collect();
+            let results = ty.results().len();
+            (params, results)
         };
 
+        let params = crate::cbor_val::decode_params(args, &param_types).map_err(|e| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("decoding args for '{}': {}", export_name, e),
+            )
+        })?;
+
         // Prepare results buffer
-        let mut results =
-            vec![wasmtime::component::Val::Bool(false); func.ty(&store).results().len()];
+        let mut results = vec![wasmtime::component::Val::Bool(false); result_count];
 
         // Call the function
         func.call(&mut store, &params, &mut results).map_err(|e| {
@@ -640,14 +814,14 @@ impl ExecHandler {
             )
         })?;
 
-        // Serialize results back to bytes
-        // For now, return empty for void functions or serialize results
-        let result_bytes = if results.is_empty() {
-            vec![]
-        } else {
-            // Simple serialization - full implementation would use proper WIT types
-            serde_json::to_vec(&results.len()).unwrap_or_default()
-        };
+        // Re-encode results as a CBOR array. Callers deserialize the
+        // returned bytes exactly like `call-with-cbor` results.
+        let result_bytes = crate::cbor_val::encode_results(&results).map_err(|e| {
+            Error::new(
+                ErrorCode::InternalError,
+                format!("encoding results for '{}': {}", export_name, e),
+            )
+        })?;
 
         self.events.info(
             "function invoked successfully",
@@ -714,17 +888,31 @@ impl ExecHandler {
         ))
     }
 
-    /// List all exports from the root component
+    /// List every callable export of the plan's composed component.
+    ///
+    /// Top-level exported functions surface under their bare name; a
+    /// function of a top-level exported interface surfaces as
+    /// `iface#func`. This is the same naming used by
+    /// `compose:host/invoker.list-exports` in `compose_host.rs`, so a
+    /// name returned here can be passed straight back to `invoke`.
     pub fn list_exports(&self, plan: &PlanV1) -> Result<Vec<String>, Error> {
         self.events.info("listing exports", None);
 
-        // Compose the plan first
-        let _composition = self.emit.compose(plan)?;
+        // Compose the plan first, then introspect the composed component's
+        // type. Instantiation is not required for enumeration.
+        let composition = self.emit.compose(plan)?;
+        let component_bytes = self.blobs.get(&composition.digest)?;
+        let component = Component::new(&self.engine, &component_bytes).map_err(|e| {
+            Error::new(
+                ErrorCode::InternalError,
+                format!("failed to load component: {}", e),
+            )
+        })?;
 
-        // For M3, return basic exports
-        // Full introspection would require parsing the component or instantiating it
-        // and enumerating its exports, which is complex with the component model
-        let exports = vec!["wasi:cli/run@0.2.0".to_string()];
+        let exports = enumerate_component_exports(&self.engine, &component)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
 
         self.events
             .info("exports listed", Some(format!("count: {}", exports.len())));
@@ -732,18 +920,38 @@ impl ExecHandler {
         Ok(exports)
     }
 
-    /// Describe a specific export (get type signature)
-    pub fn describe_export(&self, _plan: &PlanV1, export_name: &str) -> Result<ExportInfo, Error> {
+    /// Describe a specific export by returning a WIT-flavoured type
+    /// signature. Accepts the same `iface#func` names as [`list_exports`].
+    pub fn describe_export(&self, plan: &PlanV1, export_name: &str) -> Result<ExportInfo, Error> {
         self.events.info(
             "describing export",
             Some(format!("export: {}", export_name)),
         );
 
-        // For M3, return a basic type signature
-        // Full implementation would parse WIT types
+        let composition = self.emit.compose(plan)?;
+        let component_bytes = self.blobs.get(&composition.digest)?;
+        let component = Component::new(&self.engine, &component_bytes).map_err(|e| {
+            Error::new(
+                ErrorCode::InternalError,
+                format!("failed to load component: {}", e),
+            )
+        })?;
+
+        let exports = enumerate_component_exports(&self.engine, &component);
+        let cf = exports
+            .into_iter()
+            .find(|(n, _)| n == export_name)
+            .map(|(_, cf)| cf)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ExecMissingExport,
+                    format!("export '{}' not found", export_name),
+                )
+            })?;
+
         Ok(ExportInfo {
             name: export_name.to_string(),
-            type_sig: "func() -> ()".to_string(),
+            type_sig: format_func_signature(&cf),
         })
     }
 
@@ -1023,5 +1231,67 @@ mod tests {
         let a: BTreeSet<Digest> = [vec![1u8; 32], vec![2u8; 32]].into_iter().collect();
         let b: BTreeSet<Digest> = [vec![2u8; 32], vec![1u8; 32]].into_iter().collect();
         assert_eq!(hash_with(&a), hash_with(&b));
+    }
+
+    // The following tests exercise the introspection helpers that back
+    // `ExecHandler::list_exports` and `describe_export` against a real
+    // built component. They are gated on the echo provider's wasm being
+    // built (same pattern as the invoker tests in compose_host.rs).
+    fn echo_provider_bytes() -> Option<Vec<u8>> {
+        std::fs::read(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../examples/dynlink-echo-provider/target/wasm32-wasip2/release/dynlink_echo_provider.wasm",
+        ))
+        .ok()
+    }
+
+    fn test_engine() -> Engine {
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true);
+        config.wasm_exceptions(true);
+        Engine::new(&config).expect("engine")
+    }
+
+    /// The echo provider exports one interface (`compose:dynlink/endpoint`)
+    /// with a single `handle` function. `enumerate_component_exports` must
+    /// surface it as `iface#handle` — the same name the invoker capability
+    /// hands out — rather than the pre-fill stub's `"wasi:cli/run@0.2.0"`.
+    #[test]
+    fn enumerate_component_exports_finds_interface_functions() {
+        let Some(bytes) = echo_provider_bytes() else {
+            eprintln!("skipping: build examples/dynlink-echo-provider");
+            return;
+        };
+        let engine = test_engine();
+        let component = Component::new(&engine, &bytes).expect("component");
+        let exports = enumerate_component_exports(&engine, &component);
+        assert!(
+            exports.iter().any(|(n, _)| n.ends_with("#handle")),
+            "expected an iface#handle export, got {:?}",
+            exports.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        );
+    }
+
+    /// The echo provider's `handle` is
+    /// `func(method: string, payload: list<u8>) -> result<list<u8>, error>`.
+    /// The pretty-printer must produce something recognisable rather than
+    /// the pre-fill stub's `"func() -> ()"`.
+    #[test]
+    fn format_func_signature_matches_real_shape() {
+        let Some(bytes) = echo_provider_bytes() else {
+            return;
+        };
+        let engine = test_engine();
+        let component = Component::new(&engine, &bytes).expect("component");
+        let exports = enumerate_component_exports(&engine, &component);
+        let (_, cf) = exports
+            .iter()
+            .find(|(n, _)| n.ends_with("#handle"))
+            .expect("handle export");
+        let sig = format_func_signature(cf);
+        // Params: method: string, payload: list<u8>
+        assert!(sig.contains("method: string"), "sig: {}", sig);
+        assert!(sig.contains("payload: list<u8>"), "sig: {}", sig);
+        // Result: result<list<u8>, ...>
+        assert!(sig.contains("result<list<u8>"), "sig: {}", sig);
     }
 }

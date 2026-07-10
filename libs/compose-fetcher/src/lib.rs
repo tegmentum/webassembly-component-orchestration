@@ -16,7 +16,9 @@
 //! * Content-addressed cache. Cache keys are the digest, not the source
 //!   URL, so a component reachable at multiple URLs is stored once.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
+#[cfg(feature = "oci")]
+use anyhow::anyhow;
 use sha2::{Digest as _, Sha256};
 use std::{
     fs,

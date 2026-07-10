@@ -6,9 +6,13 @@
 //! convert at the boundary. The conversions are mechanical but
 //! necessarily explicit — there is no derive macro that bridges the
 //! two type systems today.
+use crate::exports::sys::compose::emit::CompositionResult as WitCompositionResult;
 use crate::exports::sys::compose::plan::{
     ComponentSpec as WitComponentSpec, ExplicitExport as WitExplicitExport,
     ImportBinding as WitImportBinding, PlanV1 as WitPlanV1, SecretBinding as WitSecretBinding,
+};
+use crate::exports::sys::compose::trust::{
+    VerificationMetadata as WitVerificationMetadata, VerificationResult as WitVerificationResult,
 };
 use crate::sys::compose::types::{
     Capability as WitCapability, CapabilityLevel as WitCapabilityLevel,
@@ -18,12 +22,15 @@ use crate::sys::compose::types::{
 
 use compose_core::types::{
     Capability as CoreCapability, CapabilityLevel as CoreCapabilityLevel,
-    ComponentSpec as CoreComponentSpec, DeterminismMode as CoreDeterminismMode,
+    ComponentSpec as CoreComponentSpec, CompositionResult as CoreCompositionResult,
+    DeterminismMode as CoreDeterminismMode,
     Error as CoreError, ErrorCode as CoreErrorCode,
     ExplicitExport as CoreExplicitExport, ImportBinding as CoreImportBinding,
     Linkage as CoreLinkage,
     PlanV1 as CorePlanV1, Policy as CorePolicy, ResourceLimits as CoreResourceLimits,
     SecretBinding as CoreSecretBinding,
+    VerificationMetadata as CoreVerificationMetadata,
+    VerificationResult as CoreVerificationResult,
 };
 
 // ---------- WIT → compose-core ----------
@@ -194,6 +201,41 @@ fn core_limits_to_wit(l: CoreResourceLimits) -> WitResourceLimits {
         cpu_ms: l.cpu_ms,
         memory_bytes: l.memory_bytes,
         io_ops: l.io_ops,
+    }
+}
+
+// ---------- emit ----------
+
+pub fn core_composition_to_wit(r: CoreCompositionResult) -> WitCompositionResult {
+    WitCompositionResult {
+        digest: r.digest,
+        size: r.size,
+        emit_key: r.emit_key,
+    }
+}
+
+// ---------- trust ----------
+
+pub fn wit_verification_metadata_to_core(m: WitVerificationMetadata) -> CoreVerificationMetadata {
+    CoreVerificationMetadata {
+        signer: m.signer,
+        timestamp: m.timestamp,
+        backend: m.backend,
+    }
+}
+
+pub fn core_verification_metadata_to_wit(m: CoreVerificationMetadata) -> WitVerificationMetadata {
+    WitVerificationMetadata {
+        signer: m.signer,
+        timestamp: m.timestamp,
+        backend: m.backend,
+    }
+}
+
+pub fn core_verification_result_to_wit(r: CoreVerificationResult) -> WitVerificationResult {
+    WitVerificationResult {
+        verified: r.verified,
+        metadata: core_verification_metadata_to_wit(r.metadata),
     }
 }
 

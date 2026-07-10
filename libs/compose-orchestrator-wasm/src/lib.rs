@@ -5,20 +5,43 @@
 //! - `compose:host/smoke` (test-only, will be removed)
 //! - `sys:compose/plan@1.0.0` — `serialize`, `deserialize`,
 //!   `compute-digest`, and `validate`.
+//! - `sys:compose/blobs@1.0.0` — `put`, `get`, `has`, `size`,
+//!   `delete`, `list-all`. Thin bridge over
+//!   `compose_core::blobs::BlobStore` at [`BLOBS_DIR`].
+//! - `sys:compose/emit@1.0.0` — `compose`, `get-artifact`,
+//!   `check-cache`. Bridges to
+//!   `compose_core::emit::EmitHandler` over [`BLOBS_DIR`] +
+//!   [`EMIT_CACHE_DIR`].
+//! - `sys:compose/trust@1.0.0` — `verify`, `verify-digest`,
+//!   `is-trusted`, `trust-digest`, `untrust-digest`. Bridges to
+//!   `compose_core::trust::TrustStore` at [`TRUST_DIR`].
+//!
+//! Not yet exported: `sys:compose/exec@1.0.0` (needs a wasm runtime
+//! inside the guest) and `sys:compose/events@1.0.0` (the compose-core
+//! `EventCollector` fits the shape but stays local to this component
+//! today; wiring it as an export would round-trip events through the
+//! host to no benefit until a host-side sink is defined).
 //!
 //! ## Preopen contract
 //!
-//! `validate` needs to check that every component digest in the plan
-//! has a corresponding blob present. It does that by opening a
-//! `compose_core::blobs::BlobStore` rooted at [`BLOBS_DIR`], a
-//! guest-side path the host MUST preopen via `wasi:filesystem` when
-//! it instantiates this component. If the preopen is missing,
-//! `validate` returns an `internal-error` rather than silently
-//! pretending no blobs exist.
+//! Every subsystem that touches persistent state opens its store at
+//! a fixed guest-side path. The host MUST preopen each of these via
+//! `wasi:filesystem` when instantiating this component. Host-side
+//! mount points are at the host's discretion (typically
+//! `.compose/{blobs,emit-cache,trust}/` from `HostConfig`); from
+//! the wasm side they are always at the paths below.
 //!
-//! The host-side mount-point is at the host's discretion (typically
-//! `.compose/blobs/` from `HostConfig`); from the wasm side it is
-//! always `/blobs`.
+//! - [`BLOBS_DIR`] — content-addressed blob storage. Required by
+//!   `plan.validate`, every `blobs.*` export, and every `emit.*`
+//!   export.
+//! - [`EMIT_CACHE_DIR`] — emit-key → composed-digest cache. Required
+//!   by every `emit.*` export.
+//! - [`TRUST_DIR`] — persistent trust metadata. Required by every
+//!   `trust.*` export.
+//!
+//! If a required preopen is missing, the corresponding call returns
+//! an `internal-error` rather than silently pretending the store is
+//! empty.
 wit_bindgen::generate!({
     path: "wit",
     world: "orchestrator",
@@ -31,12 +54,28 @@ mod wit_secure_log;
 use std::sync::{Arc, Mutex};
 
 use exports::compose::host::smoke::Guest as SmokeGuest;
+use exports::sys::compose::blobs::Guest as BlobsGuest;
+use exports::sys::compose::emit::{
+    CompositionResult as WitCompositionResult, Guest as EmitGuest,
+};
 use exports::sys::compose::plan::{Guest as PlanGuest, PlanV1 as WitPlanV1};
-use sys::compose::types::Error as WitError;
+use exports::sys::compose::trust::{
+    Guest as TrustGuest, VerificationMetadata as WitVerificationMetadata,
+    VerificationResult as WitVerificationResult,
+};
+use sys::compose::types::{Error as WitError, ErrorCode as WitErrorCode};
 
 /// Guest-side path the host MUST preopen for blob storage. See module
 /// docs for the full preopen contract.
 const BLOBS_DIR: &str = "/blobs";
+
+/// Guest-side path the host MUST preopen for the emit-key cache. See
+/// module docs for the full preopen contract.
+const EMIT_CACHE_DIR: &str = "/emit-cache";
+
+/// Guest-side path the host MUST preopen for trust metadata. See
+/// module docs for the full preopen contract.
+const TRUST_DIR: &str = "/trust";
 
 /// Environment variable a host can set to raise the maximum blob size
 /// this guest will accept during `validate`. The value is parsed as a
@@ -61,6 +100,54 @@ fn resolve_max_blob_size() -> u64 {
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(compose_core::limits::DEFAULT_MAX_BLOB_SIZE)
+}
+
+/// Open the compose-core `BlobStore` rooted at [`BLOBS_DIR`]. Surfaces
+/// a missing wasi:filesystem preopen as an `internal-error` at the WIT
+/// boundary rather than papering over it.
+fn open_blob_store() -> Result<compose_core::blobs::BlobStore, WitError> {
+    compose_core::blobs::BlobStore::new(
+        std::path::PathBuf::from(BLOBS_DIR),
+        resolve_max_blob_size(),
+    )
+    .map_err(|e| WitError {
+        code: WitErrorCode::InternalError,
+        message: format!(
+            "failed to open blob store at {BLOBS_DIR} \
+             (did the host preopen it via wasi:filesystem?): {e}"
+        ),
+        context: None,
+    })
+}
+
+/// Construct an `EmitHandler` over the guest-side preopens for blobs
+/// and the emit cache. The `EventCollector` is process-local; nothing
+/// today ships those events outside the guest.
+fn open_emit_handler() -> Result<compose_core::emit::EmitHandler, WitError> {
+    let blobs = open_blob_store()?;
+    let events = compose_core::EventCollector::default();
+    Ok(compose_core::emit::EmitHandler::new(
+        blobs,
+        events,
+        std::path::PathBuf::from(EMIT_CACHE_DIR),
+    ))
+}
+
+/// Open the compose-core `TrustStore` rooted at [`TRUST_DIR`]. Same
+/// preopen-missing story as [`open_blob_store`].
+fn open_trust_store() -> Result<compose_core::trust::TrustStore, WitError> {
+    compose_core::trust::TrustStore::new(
+        std::path::PathBuf::from(TRUST_DIR),
+        compose_core::SystemClock::shared(),
+    )
+    .map_err(|e| WitError {
+        code: WitErrorCode::InternalError,
+        message: format!(
+            "failed to open trust store at {TRUST_DIR} \
+             (did the host preopen it via wasi:filesystem?): {e}"
+        ),
+        context: None,
+    })
 }
 
 /// The exported component. Bind every interface this crate provides
@@ -125,18 +212,7 @@ impl PlanGuest for Component {
 
     fn validate(plan: WitPlanV1) -> Result<(), WitError> {
         let core_plan = adapters::wit_plan_to_core(plan);
-        let blobs = compose_core::blobs::BlobStore::new(
-            std::path::PathBuf::from(BLOBS_DIR),
-            resolve_max_blob_size(),
-        )
-        .map_err(|e| WitError {
-            code: sys::compose::types::ErrorCode::InternalError,
-            message: format!(
-                "failed to open blob store at {BLOBS_DIR} \
-                 (did the host preopen it via wasi:filesystem?): {e}"
-            ),
-            context: None,
-        })?;
+        let blobs = open_blob_store()?;
         compose_core::PlanValidator::new(blobs)
             .validate(&core_plan)
             .map_err(adapters::core_err_to_wit)
@@ -145,6 +221,128 @@ impl PlanGuest for Component {
     fn compute_digest(plan: WitPlanV1) -> Result<Vec<u8>, WitError> {
         let core_plan = adapters::wit_plan_to_core(plan);
         compose_core::plan::compute_plan_digest(&core_plan).map_err(adapters::core_err_to_wit)
+    }
+}
+
+impl BlobsGuest for Component {
+    fn put(bytes: Vec<u8>) -> Result<Vec<u8>, WitError> {
+        open_blob_store()?
+            .put(&bytes)
+            .map_err(adapters::core_err_to_wit)
+    }
+
+    fn get(digest: Vec<u8>) -> Result<Vec<u8>, WitError> {
+        open_blob_store()?
+            .get(&digest)
+            .map_err(adapters::core_err_to_wit)
+    }
+
+    fn has(digest: Vec<u8>) -> bool {
+        // `has` returns `bool` in the WIT — a missing preopen collapses
+        // to "no such blob", matching the same signal a missing file
+        // would give.
+        match open_blob_store() {
+            Ok(store) => store.has(&digest),
+            Err(_) => false,
+        }
+    }
+
+    fn size(digest: Vec<u8>) -> Option<u64> {
+        // Same collapse as `has` — no way to signal "store unreachable"
+        // through an `option<u64>` return.
+        match open_blob_store() {
+            Ok(store) => store.size(&digest),
+            Err(_) => None,
+        }
+    }
+
+    fn delete(digest: Vec<u8>) -> Result<(), WitError> {
+        open_blob_store()?
+            .delete(&digest)
+            .map_err(adapters::core_err_to_wit)
+    }
+
+    fn list_all() -> Vec<Vec<u8>> {
+        // `list-all` returns `list<digest>` — no error channel. An
+        // unreachable store surfaces as an empty list, same as an
+        // empty store.
+        match open_blob_store() {
+            Ok(store) => store.list_all(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+impl EmitGuest for Component {
+    fn compose(plan: WitPlanV1) -> Result<WitCompositionResult, WitError> {
+        let core_plan = adapters::wit_plan_to_core(plan);
+        let handler = open_emit_handler()?;
+        handler
+            .compose(&core_plan)
+            .map(adapters::core_composition_to_wit)
+            .map_err(adapters::core_err_to_wit)
+    }
+
+    fn get_artifact(digest: Vec<u8>) -> Result<Vec<u8>, WitError> {
+        let handler = open_emit_handler()?;
+        handler
+            .get_artifact(&digest)
+            .map_err(adapters::core_err_to_wit)
+    }
+
+    fn check_cache(emit_key: Vec<u8>) -> Option<Vec<u8>> {
+        // Cache-miss on unreachable store — same reasoning as
+        // `blobs::has`.
+        match open_emit_handler() {
+            Ok(handler) => handler.check_cache(&emit_key),
+            Err(_) => None,
+        }
+    }
+}
+
+impl TrustGuest for Component {
+    fn verify(
+        digest: Vec<u8>,
+        bytes: Vec<u8>,
+        signature: Option<Vec<u8>>,
+    ) -> Result<WitVerificationResult, WitError> {
+        let store = open_trust_store()?;
+        store
+            .verify(&digest, &bytes, signature.as_deref())
+            .map(adapters::core_verification_result_to_wit)
+            .map_err(adapters::core_err_to_wit)
+    }
+
+    fn verify_digest(digest: Vec<u8>) -> Result<WitVerificationResult, WitError> {
+        let store = open_trust_store()?;
+        store
+            .verify_digest(&digest)
+            .map(adapters::core_verification_result_to_wit)
+            .map_err(adapters::core_err_to_wit)
+    }
+
+    fn is_trusted(digest: Vec<u8>) -> bool {
+        match open_trust_store() {
+            Ok(store) => store.is_trusted(&digest),
+            Err(_) => false,
+        }
+    }
+
+    fn trust_digest(
+        digest: Vec<u8>,
+        metadata: WitVerificationMetadata,
+    ) -> Result<(), WitError> {
+        let store = open_trust_store()?;
+        store
+            .trust_digest(&digest, adapters::wit_verification_metadata_to_core(metadata))
+            .map_err(adapters::core_err_to_wit)
+    }
+
+    fn untrust_digest(digest: Vec<u8>) -> Result<(), WitError> {
+        let store = open_trust_store()?;
+        store
+            .untrust_digest(&digest)
+            .map_err(adapters::core_err_to_wit)
     }
 }
 

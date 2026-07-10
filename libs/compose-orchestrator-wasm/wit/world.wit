@@ -70,4 +70,23 @@ world orchestrator {
     // scope but requires a blob store, so we'll add it once
     // wasi:filesystem preopens are in the picture.
     export sys:compose/plan@1.0.0;
+
+    // Content-addressed blob storage. Backed by
+    // compose_core::blobs::BlobStore rooted at the `/blobs`
+    // preopen. Host must supply a wasi:filesystem preopen for
+    // this to function; see module docs in src/lib.rs.
+    export sys:compose/blobs@1.0.0;
+
+    // Composition + emit-cache. Backed by
+    // compose_core::emit::EmitHandler over the `/blobs` blob
+    // store and the `/emit-cache` cache directory (both
+    // wasi:filesystem preopens supplied by the host).
+    export sys:compose/emit@1.0.0;
+
+    // Trust store — verify/verify-digest/is-trusted plus the
+    // admin trust/untrust operations. Backed by
+    // compose_core::trust::TrustStore rooted at `/trust` and
+    // wired to the SystemClock (which lowers to
+    // wasi:clocks/wall-clock on wasip2).
+    export sys:compose/trust@1.0.0;
 }

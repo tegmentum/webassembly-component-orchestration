@@ -164,6 +164,39 @@ impl SmokeGuest for Component {
         compose_core::blobs::compute_digest(&bytes)
     }
 
+    fn tegmentum_probe() -> Result<String, String> {
+        // Touch host:bootstrap.args. The import surfaces to Rust as
+        // `crate::host::bootstrap::bootstrap::args()`. A no-op host
+        // (like wasmtime-cli's trap-unknown-imports path) will trap
+        // here — treat that as a diagnostic error, not a crash.
+        let args = crate::host::bootstrap::bootstrap::args();
+        let n_args = args.len();
+
+        // Touch tegmentum:runtime/control by constructing a
+        // Runtime resource with default (all-unbounded) limits.
+        // If no host provides tegmentum:runtime the constructor's
+        // canonical-ABI call traps; wit-bindgen returns via panic,
+        // which would abort. So we deliberately do NOT invoke the
+        // constructor here at runtime — instead the reference below
+        // takes a function-pointer view of the import, which is
+        // enough for LLVM's `#[used]`-like retention semantics
+        // (function pointer used in reachable code path keeps the
+        // extern reference alive) without a runtime trap.
+        //
+        // If a future embedder DOES provide tegmentum:runtime, this
+        // probe can be extended to actually call `Runtime::new` and
+        // report success. Today we just report that the reference
+        // is live.
+        let rt_ctor_probe: fn(
+            crate::tegmentum::runtime::types::ResourceLimits,
+        ) -> crate::tegmentum::runtime::control::Runtime =
+            crate::tegmentum::runtime::control::Runtime::new;
+        // Prevent LLVM from optimizing the reference away.
+        core::hint::black_box(rt_ctor_probe as usize);
+
+        Ok(format!("args={n_args} runtime=probed"))
+    }
+
     fn audit_demo(tenant: String, count: u32) -> Result<u64, String> {
         // Back compose-core's AuditLogger with the imported secure-log
         // component. This is the same AuditLogger that runs natively

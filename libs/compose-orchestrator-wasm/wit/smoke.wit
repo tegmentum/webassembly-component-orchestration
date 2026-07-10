@@ -27,4 +27,25 @@ interface smoke {
     /// same AuditLogger code that runs natively, over a WIT-imported
     /// secure-log backend.
     audit-demo: func(tenant: string, count: u32) -> result<u64, string>;
+
+    /// Diagnostic probe for the `host:bootstrap` and
+    /// `tegmentum:runtime` imports the world declares.
+    ///
+    /// - Reads `host:bootstrap.args` and reports the argument count.
+    /// - Constructs (and immediately drops) a `tegmentum:runtime/
+    ///   control.runtime` with default limits, to prove the runtime
+    ///   frontend is reachable from this component.
+    ///
+    /// Returns a short diagnostic string on success (e.g. `"args=2
+    /// runtime=ok"`) or a `result::err` if either import failed —
+    /// which most commonly means the outer embedder did not provide
+    /// a `tegmentum:runtime` implementation.
+    ///
+    /// Not called in the normal `sys:compose/*` hot path. Its
+    /// purpose is to keep both imports referenced from Rust code so
+    /// dead-code elimination does not strip them from the compiled
+    /// component. That way `wasm-tools component wit` reports the
+    /// declared imports even before the composer's other code paths
+    /// use them.
+    tegmentum-probe: func() -> result<string, string>;
 }

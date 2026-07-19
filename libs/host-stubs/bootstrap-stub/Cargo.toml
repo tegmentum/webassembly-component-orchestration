@@ -1,0 +1,21 @@
+[package]
+name = "bootstrap-stub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Empty-args stub for host:bootstrap/bootstrap@0.1.0 -- consumed by wac plug at orchestrator composition time."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { workspace = true }
+wit-bindgen-rt = { workspace = true }
+
+[package.metadata.component]
+package = "compose:bootstrap-stub"
+
+[package.metadata.component.target]
+path = "wit"
+world = "stub"

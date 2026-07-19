@@ -1,0 +1,15 @@
+package host:bootstrap@0.1.0;
+
+// Structural copy of host:bootstrap/bootstrap@0.1.0. Only args()
+// is kept -- that is the only member the composed orchestrator wasm
+// actually calls (from smoke.tegmentum-probe). list-artifacts and
+// get-artifact are declared in the upstream interface but the
+// orchestrator does not import them today, so widening the stub to
+// include them would only make the shape-check spurious.
+interface bootstrap {
+    args: func() -> list<string>;
+}
+
+world stub {
+    export bootstrap;
+}

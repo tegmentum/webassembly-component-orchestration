@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "runtime-info-stub",
+    "bootstrap-stub",
 ]
 
 # Stub host components that satisfy the compose orchestrator's

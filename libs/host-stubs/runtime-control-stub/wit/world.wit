@@ -1,0 +1,36 @@
+package tegmentum:runtime@0.1.0;
+
+// Structural copy of the tegmentum:runtime/types@0.1.0 interface,
+// narrowed to what the composed orchestrator wasm actually uses.
+// The full upstream types interface has value / capability / error
+// / error-kind too -- none of them appear as imports in the
+// orchestrator today, so keeping the stub narrow means wac plug's
+// shape-check has less to complain about.
+interface types {
+    record resource-limits {
+        max-memory-bytes: option<u64>,
+        cycle-budget: option<u64>,
+    }
+}
+
+// Structural copy of tegmentum:runtime/control@0.1.0. Only the
+// runtime resource + constructor is kept because that is the only
+// symbol the composed orchestrator wasm references.
+//
+// The orchestrator NEVER actually invokes the constructor at
+// runtime -- it takes a function-pointer view under
+// `core::hint::black_box` in smoke.tegmentum-probe so LLVM does
+// not strip the extern reference. Nonetheless wac plug wants an
+// export to satisfy the declared import at composition time.
+interface control {
+    use types.{resource-limits};
+
+    resource runtime {
+        constructor(limits: resource-limits);
+    }
+}
+
+world stub {
+    export types;
+    export control;
+}

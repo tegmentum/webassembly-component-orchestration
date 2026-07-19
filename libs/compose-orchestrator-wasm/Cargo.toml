@@ -17,3 +17,7 @@ wit-bindgen = "0.57"
 # This dependency demonstrates the architecture — pure-Rust
 # orchestrator code reachable from a wasm component.
 compose-core = { path = "../compose-core" }
+
+# RDF/Turtle serialization for the sys:compose/rdf export. compose-rdf's
+# writer half — `plan_to_turtle` — is the sole surface we consume here.
+compose-rdf = { path = "../compose-rdf" }

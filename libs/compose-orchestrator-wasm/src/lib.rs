@@ -15,6 +15,11 @@
 //! - `sys:compose/trust@1.0.0` — `verify`, `verify-digest`,
 //!   `is-trusted`, `trust-digest`, `untrust-digest`. Bridges to
 //!   `compose_core::trust::TrustStore` at [`TRUST_DIR`].
+//! - `sys:compose/rdf@1.0.0` — `plan-to-turtle`,
+//!   `plan-to-turtle-with-iri`. Decodes canonical CBOR plan bytes
+//!   (via `compose_core::plan::deserialize`) and hands the result to
+//!   `compose_rdf::plan_to_turtle`. Pure computation; no preopens
+//!   required.
 //!
 //! Not yet exported: `sys:compose/exec@1.0.0` (needs a wasm runtime
 //! inside the guest) and `sys:compose/events@1.0.0` (the compose-core
@@ -59,6 +64,7 @@ use exports::sys::compose::emit::{
     CompositionResult as WitCompositionResult, Guest as EmitGuest,
 };
 use exports::sys::compose::plan::{Guest as PlanGuest, PlanV1 as WitPlanV1};
+use exports::sys::compose::rdf::Guest as RdfGuest;
 use exports::sys::compose::trust::{
     Guest as TrustGuest, VerificationMetadata as WitVerificationMetadata,
     VerificationResult as WitVerificationResult,
@@ -330,6 +336,23 @@ impl EmitGuest for Component {
             Ok(handler) => handler.check_cache(&emit_key),
             Err(_) => None,
         }
+    }
+}
+
+impl RdfGuest for Component {
+    fn plan_to_turtle(plan_cbor: Vec<u8>) -> Result<String, WitError> {
+        let plan = compose_core::plan::deserialize(&plan_cbor)
+            .map_err(adapters::core_err_to_wit)?;
+        Ok(compose_rdf::plan_to_turtle(&plan))
+    }
+
+    fn plan_to_turtle_with_iri(
+        plan_cbor: Vec<u8>,
+        plan_iri: String,
+    ) -> Result<String, WitError> {
+        let plan = compose_core::plan::deserialize(&plan_cbor)
+            .map_err(adapters::core_err_to_wit)?;
+        Ok(compose_rdf::plan_to_turtle_with_iri(&plan, &plan_iri))
     }
 }
 

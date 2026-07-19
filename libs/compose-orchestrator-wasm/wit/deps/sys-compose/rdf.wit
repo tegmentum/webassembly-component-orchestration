@@ -1,0 +1,36 @@
+/// RDF interface — Turtle serialization of composition plans.
+///
+/// This interface complements the `plan` interface: whereas `plan`
+/// speaks the canonical CBOR wire format that the orchestrator's core
+/// consumes, `rdf` exposes the human/graph-store-facing Turtle
+/// serialization of the same plan. It exists so an outer host
+/// (e.g. a Stardog plugin) can hand its user a graph-native view of
+/// a composition plan without shipping compose-core's RDF vocabulary
+/// or hand-rolling a serializer of its own.
+///
+/// The Turtle emitted here is the writer half of the round-trip
+/// contract exposed by the `compose-rdf` crate:
+/// `plan_from_rdf(plan_to_rdf(p))` reconstructs `p` for any valid plan
+/// with an empty `explicit-exports` list (the reader's current limit).
+///
+/// The input is the same canonical CBOR the `plan.serialize` /
+/// `plan.deserialize` pair produces — callers that already hold a
+/// `plan-v1` can round-trip through `plan.serialize` before calling
+/// `plan-to-turtle`, which keeps this interface's surface small.
+interface rdf {
+  use types.{error};
+
+  /// Serialize a plan (canonical CBOR bytes) to a Turtle document.
+  ///
+  /// Returns an error if the bytes are not a valid CBOR-encoded plan;
+  /// on success returns a UTF-8 Turtle document whose plan subject is
+  /// `urn:composition:plan`. See the compose-rdf crate for the vocab
+  /// (`http://tegmentum.ai/ns/composition/`) the document uses.
+  plan-to-turtle: func(plan-cbor: list<u8>) -> result<string, error>;
+
+  /// Same as `plan-to-turtle` but the caller chooses the plan IRI —
+  /// useful when the outer host wants a stable, plan-digest-derived
+  /// or tenant-namespaced subject IRI.
+  plan-to-turtle-with-iri: func(plan-cbor: list<u8>, plan-iri: string)
+    -> result<string, error>;
+}

@@ -115,4 +115,11 @@ world orchestrator {
     // wired to the SystemClock (which lowers to
     // wasi:clocks/wall-clock on wasip2).
     export sys:compose/trust@1.0.0;
+
+    // Turtle serialization of a plan. Backed by the compose-rdf
+    // crate's `plan_to_turtle` writer. Callers pass canonical CBOR
+    // plan bytes (as produced by `sys:compose/plan.serialize`) and
+    // receive a Turtle document a graph store can ingest directly.
+    // See wit/deps/sys-compose/rdf.wit for the vocab reference.
+    export sys:compose/rdf@1.0.0;
 }

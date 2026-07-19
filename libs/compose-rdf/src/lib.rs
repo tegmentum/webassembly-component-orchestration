@@ -196,7 +196,30 @@ pub mod vocab {
     iri!(EXPLICIT_EXPORT,  "explicitExport");
     iri!(SOURCE_INSTANCE,  "sourceInstance");
     iri!(INTERFACE_NAME,   "interfaceName");
+
+    // Composed-artifact anchoring — links the plan IRI to the composed
+    // wasm's location and (optionally) content-address. Emitted by
+    // `plan_to_turtle_with_artifact`; the reader silently ignores both
+    // predicates for forward compatibility.
+    //
+    // `hasArtifact` — the composed artifact URL. Any URL scheme is
+    // valid; the plugin's in-tree store defaults to `sha256://<hex>`,
+    // but operators re-hosting to `https://cdn.example.com/...` or
+    // `ipfs://Qm...` update the triple in place.
+    //
+    // `compositionDigest` — SHA-256 of the composed bytes as a
+    // lowercase-hex `xsd:string`. Stable across re-hosting; useful for
+    // content verification independent of URL scheme.
+    iri!(HAS_ARTIFACT,        "hasArtifact");
+    iri!(COMPOSITION_DIGEST,  "compositionDigest");
 }
+
+/// Convenience re-exports of the composed-artifact anchor predicate
+/// IRIs. Callers wiring the writer output into a downstream index
+/// (e.g. the Stardog plugin's `ComposePolicyStoreWriter`) can reference
+/// these directly instead of walking `mod vocab`.
+pub const COMP_HAS_ARTIFACT: &str = vocab::HAS_ARTIFACT;
+pub const COMP_COMPOSITION_DIGEST: &str = vocab::COMPOSITION_DIGEST;
 
 // ---------------------------------------------------------------------------
 // Parser
@@ -1025,6 +1048,52 @@ pub fn plan_to_turtle_with_iri(plan: &PlanV1, plan_iri: &str) -> String {
     triples_to_turtle(&plan_to_rdf_with_iri(plan, plan_iri))
 }
 
+/// Serialize a [`PlanV1`] to Turtle with a caller-chosen plan IRI, and
+/// additionally emit two composed-artifact anchor triples that let
+/// downstream admins SPARQL-join composition RDF against extension
+/// grants without any external registry.
+///
+/// - `<plan_iri> comp:hasArtifact <artifact_url>` — REQUIRED; the URL
+///   the composed wasm is served from. Any URL scheme is valid — the
+///   plugin's default is `sha256://<hex>` (content-addressed blob
+///   store), but operators re-hosting to `https://…`, `file://…`,
+///   `ipfs://…`, etc. simply SPARQL-UPDATE this triple.
+/// - `<plan_iri> comp:compositionDigest "<digest_hex>"` — OPTIONAL;
+///   emitted only when `digest_hex` is `Some`. SHA-256 of the composed
+///   bytes as a lowercase-hex `xsd:string`. Stable across URL
+///   re-hosting; the content-independent verification anchor.
+///
+/// The reader ([`plan_from_rdf`], [`plan_from_turtle`]) silently
+/// ignores both predicates — round-trip stability holds for plans
+/// carrying these anchors.
+pub fn plan_to_turtle_with_artifact(
+    plan: &PlanV1,
+    plan_iri: &str,
+    artifact_url: &str,
+    digest_hex: Option<&str>,
+) -> String {
+    let mut ts = plan_to_rdf_with_iri(plan, plan_iri);
+    let plan_subject = Term::iri(plan_iri);
+    // Artifact URL as an IRI — the URL is a location; IRI keeps it
+    // joinable against extension-grant triples that also use the URL
+    // as a subject.
+    ts.push(Triple::new(
+        plan_subject.clone(),
+        Term::iri(vocab::HAS_ARTIFACT),
+        Term::iri(artifact_url.to_string()),
+    ));
+    if let Some(hex) = digest_hex {
+        // Digest as a plain string literal — content identity, not a
+        // location. xsd:string is the default so we omit the datatype.
+        ts.push(Triple::new(
+            plan_subject,
+            Term::iri(vocab::COMPOSITION_DIGEST),
+            Term::literal(hex.to_string()),
+        ));
+    }
+    triples_to_turtle(&ts)
+}
+
 /// Format a triple slice as valid Turtle. Emits a `@prefix comp:` header
 /// then one triple per line — the plainest shape the Turtle grammar
 /// admits so no third-party serializer is needed. Callers who want
@@ -1785,5 +1854,97 @@ mod tests {
         let e = plan_from_turtle(bad).expect_err("expected parse error");
         let msg = format!("{e}");
         assert!(msg.contains("turtle parse error"), "unexpected error: {msg}");
+    }
+
+    // -----------------------------------------------------------------
+    // Composed-artifact anchor tests (comp:hasArtifact, comp:compositionDigest)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn plan_to_turtle_with_artifact_emits_has_artifact() {
+        let plan = minimal_plan();
+        let iri = "urn:my:plan-with-artifact";
+        let artifact = "sha256://deadbeef";
+        let ttl = plan_to_turtle_with_artifact(&plan, iri, artifact, None);
+        // Locally-prefixed predicate + IRI object.
+        assert!(
+            ttl.contains("comp:hasArtifact"),
+            "expected comp:hasArtifact predicate in Turtle output:\n{ttl}"
+        );
+        assert!(
+            ttl.contains(artifact),
+            "expected artifact URL literal in Turtle output:\n{ttl}"
+        );
+    }
+
+    #[test]
+    fn plan_to_turtle_with_artifact_omits_digest_when_none() {
+        let plan = minimal_plan();
+        let ttl = plan_to_turtle_with_artifact(
+            &plan,
+            "urn:my:plan-no-digest",
+            "sha256://cafebabe",
+            None,
+        );
+        assert!(
+            !ttl.contains("comp:compositionDigest"),
+            "digest predicate must NOT appear when digest_hex is None:\n{ttl}"
+        );
+    }
+
+    #[test]
+    fn plan_to_turtle_with_artifact_emits_digest_when_some() {
+        let plan = minimal_plan();
+        let hex =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let ttl = plan_to_turtle_with_artifact(
+            &plan,
+            "urn:my:plan-with-digest",
+            "sha256://aa",
+            Some(hex),
+        );
+        assert!(
+            ttl.contains("comp:compositionDigest"),
+            "expected comp:compositionDigest predicate in Turtle output:\n{ttl}"
+        );
+        assert!(
+            ttl.contains(hex),
+            "expected digest hex literal in Turtle output:\n{ttl}"
+        );
+    }
+
+    #[test]
+    fn reader_ignores_composed_artifact_predicates_round_trip() {
+        // With artifact + digest predicates present, the reader must
+        // reconstruct the original plan unchanged — the new predicates
+        // are additive and forward-compatible.
+        let want = minimal_plan();
+        let iri = "urn:my:plan-round-trip-artifact";
+        let ttl = plan_to_turtle_with_artifact(
+            &want,
+            iri,
+            "sha256://11",
+            Some("11111111111111111111111111111111"),
+        );
+        let got = plan_from_turtle_with_iri(&ttl, iri)
+            .expect("round-trip parse must succeed with artifact anchors present");
+        assert_eq!(got.version, want.version);
+        assert_eq!(got.root, want.root);
+        assert_eq!(got.components.len(), want.components.len());
+    }
+
+    #[test]
+    fn vocab_constants_use_composition_namespace() {
+        // Guard against a rename drifting the RDF surface.
+        assert_eq!(
+            vocab::HAS_ARTIFACT,
+            "http://tegmentum.ai/ns/composition/hasArtifact"
+        );
+        assert_eq!(
+            vocab::COMPOSITION_DIGEST,
+            "http://tegmentum.ai/ns/composition/compositionDigest"
+        );
+        assert_eq!(COMP_HAS_ARTIFACT, vocab::HAS_ARTIFACT);
+        assert_eq!(COMP_COMPOSITION_DIGEST, vocab::COMPOSITION_DIGEST);
     }
 }

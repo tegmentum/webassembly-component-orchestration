@@ -1,0 +1,21 @@
+package compose:host@0.1.0;
+
+// Structural copy of compose:host/runtime-info@0.1.0. Only the
+// members actually referenced by the composed orchestrator wasm are
+// kept -- keeping the shape narrow means wac plug's shape-checker
+// has nothing to complain about, and the stub does not have to grow
+// implementations for things the orchestrator never calls.
+interface runtime-info {
+    record fingerprint {
+        runtime-name: string,
+        runtime-version: string,
+        engine-features-hash: list<u8>,
+        host-target: string,
+    }
+
+    get-fingerprint: func() -> fingerprint;
+}
+
+world stub {
+    export runtime-info;
+}

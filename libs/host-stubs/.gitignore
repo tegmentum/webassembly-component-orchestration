@@ -1,0 +1,2 @@
+# cargo-component regenerates bindings.rs on each build.
+**/bindings.rs

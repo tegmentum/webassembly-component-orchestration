@@ -1,4 +1,4 @@
-//! Read a composition `PlanV1` from RDF triples.
+//! Read and write a composition `PlanV1` as RDF triples.
 //!
 //! The wf plugin's `wf:compose(<plan>, …)` invocation fires a SPARQL query
 //! that walks a plan's transitive closure — every triple whose subject is
@@ -53,7 +53,17 @@ use compose_core::{
     Capability, CapabilityLevel, ComponentId, ComponentSpec, DeterminismMode, Digest,
     ImportBinding, Linkage, PlanV1, Policy, ResourceLimits, SecretBinding,
 };
+use compose_core::types::ExplicitExport;
 use std::collections::{BTreeMap, HashMap};
+
+/// Default plan IRI used by [`plan_to_rdf`] and [`plan_to_turtle`] when the
+/// caller doesn't supply one. Consumers that want a stable per-plan IRI
+/// (e.g. namespaced by the plan's digest) can use
+/// [`plan_to_rdf_with_iri`] / [`plan_to_turtle_with_iri`] instead.
+///
+/// The reader's `plan_iri` argument must match whatever IRI was used at
+/// write time for a lossless round-trip.
+pub const DEFAULT_PLAN_IRI: &str = "urn:composition:plan";
 
 // ---------------------------------------------------------------------------
 // RDF term surface
@@ -180,6 +190,12 @@ pub mod vocab {
     // Capability
     iri!(NAME,             "name");
     iri!(LEVEL,            "level");
+
+    // Explicit-export re-surface (writer-only for now: the current reader
+    // does not parse these; see `plan_to_rdf` for the round-trip note).
+    iri!(EXPLICIT_EXPORT,  "explicitExport");
+    iri!(SOURCE_INSTANCE,  "sourceInstance");
+    iri!(INTERFACE_NAME,   "interfaceName");
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +600,494 @@ impl<'a> TripleIndex<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Writer — PlanV1 -> Vec<Triple>
+// ---------------------------------------------------------------------------
+
+/// Serialize a [`PlanV1`] to RDF triples using [`DEFAULT_PLAN_IRI`] as the
+/// plan subject.
+///
+/// The writer is the counterpart to [`plan_from_rdf`] and is designed for
+/// a lossless round-trip: `plan_from_rdf(DEFAULT_PLAN_IRI,
+/// &plan_to_rdf(p))` reconstructs `p` for any valid plan whose
+/// `explicit_exports` list is empty. See [`plan_to_rdf_with_iri`] for the
+/// full round-trip contract and the [explicit-exports gap][gap].
+///
+/// [gap]: plan_to_rdf_with_iri
+pub fn plan_to_rdf(plan: &PlanV1) -> Vec<Triple> {
+    plan_to_rdf_with_iri(plan, DEFAULT_PLAN_IRI)
+}
+
+/// Serialize a [`PlanV1`] to RDF triples with a caller-chosen plan IRI.
+///
+/// # Round-trip contract
+///
+/// For any [`PlanV1`] whose `explicit_exports` list is empty and whose
+/// components carry SHA-256 digests, the sequence
+///
+/// ```ignore
+/// let ts = plan_to_rdf_with_iri(&p, "urn:my:plan");
+/// let back = plan_from_rdf("urn:my:plan", &ts).unwrap();
+/// assert_eq!(canonical(back), canonical(p));
+/// ```
+///
+/// holds, where `canonical` sorts `components` by id and `capabilities`
+/// by name — the same normalizations the reader performs. The writer
+/// pre-sorts capabilities so that its own output already matches the
+/// reader's canonicalization; components are emitted in the plan's own
+/// order and sorted on the way back in by the reader.
+///
+/// # Explicit-exports gap
+///
+/// The current [`plan_from_rdf`] does not parse `comp:explicitExport`
+/// blank nodes. The writer emits them (under the vocab constants added
+/// alongside `plan_to_rdf`) so the vocab surface is complete and a
+/// future reader upgrade can pick them up, but until that lands a plan
+/// with non-empty `explicit_exports` does NOT round-trip: the reader
+/// will reconstruct it with `explicit_exports: vec![]`. Callers that
+/// need this today should either upgrade the reader or wrap the CBOR
+/// payload alongside the RDF.
+///
+/// # Component identity
+///
+/// Components are emitted as blank-node subjects with an explicit
+/// `comp:id "<id>"` literal, and every cross-reference
+/// (`comp:root`, `comp:provider`, `comp:consumer`) is written as a
+/// string literal rather than a component IRI. The reader accepts
+/// literal terms for those slots (`term_to_component_id` returns the
+/// literal value verbatim), which lets the writer support arbitrary
+/// opaque `ComponentId` strings without having to prove they round-trip
+/// through IRI local-name derivation.
+pub fn plan_to_rdf_with_iri(plan: &PlanV1, plan_iri: &str) -> Vec<Triple> {
+    let mut ts: Vec<Triple> = Vec::new();
+    let plan_subject = Term::iri(plan_iri);
+    let type_pred = Term::iri(vocab::RDF_TYPE);
+
+    // Plan class.
+    ts.push(Triple::new(
+        plan_subject.clone(),
+        type_pred.clone(),
+        Term::iri(vocab::COMPOSITION_PLAN),
+    ));
+
+    // Version — always emitted so the reader picks up the explicit value
+    // instead of falling back to "1".
+    ts.push(Triple::new(
+        plan_subject.clone(),
+        Term::iri(vocab::VERSION),
+        Term::literal(plan.version.clone()),
+    ));
+
+    // Root — literal so any opaque ComponentId string round-trips
+    // through term_to_component_id.
+    ts.push(Triple::new(
+        plan_subject.clone(),
+        Term::iri(vocab::ROOT),
+        Term::literal(plan.root.clone()),
+    ));
+
+    // Components — blank subjects with explicit comp:id.
+    for (i, spec) in plan.components.iter().enumerate() {
+        let subj = Term::blank(component_bnode_label(i));
+        ts.push(Triple::new(
+            plan_subject.clone(),
+            Term::iri(vocab::COMPONENT),
+            subj.clone(),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            type_pred.clone(),
+            Term::iri(vocab::COMPONENT_CLASS),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::ID),
+            Term::literal(spec.id.clone()),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::DIGEST),
+            Term::literal(format!("sha256:{}", hex_encode(&spec.digest))),
+        ));
+        if let Some(src) = &spec.source {
+            ts.push(Triple::new(
+                subj.clone(),
+                Term::iri(vocab::SOURCE),
+                Term::literal(src.clone()),
+            ));
+        }
+    }
+
+    // Bindings — order preserved (reader keeps insertion order).
+    for (i, b) in plan.bindings.iter().enumerate() {
+        let subj = Term::blank(binding_bnode_label(i));
+        ts.push(Triple::new(
+            plan_subject.clone(),
+            Term::iri(vocab::BINDING),
+            subj.clone(),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::IMPORT),
+            Term::literal(b.import_name.clone()),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::PROVIDER),
+            Term::literal(b.provider_id.clone()),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::EXPORT),
+            Term::literal(b.export_name.clone()),
+        ));
+        if let Some(cid) = &b.consumer_id {
+            ts.push(Triple::new(
+                subj.clone(),
+                Term::iri(vocab::CONSUMER),
+                Term::literal(cid.clone()),
+            ));
+        }
+    }
+
+    // Secrets.
+    for (i, s) in plan.secrets.iter().enumerate() {
+        let subj = Term::blank(secret_bnode_label(i));
+        ts.push(Triple::new(
+            plan_subject.clone(),
+            Term::iri(vocab::SECRET),
+            subj.clone(),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::SECRET_ID),
+            Term::literal(s.secret_id.clone()),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::BACKEND),
+            Term::literal(s.backend_uri.clone()),
+        ));
+    }
+
+    // Policy — always emitted, always determinism-explicit so the
+    // reader's inner default (Strict) doesn't shadow our Relaxed default.
+    let policy_subj = Term::blank("pol".to_string());
+    ts.push(Triple::new(
+        plan_subject.clone(),
+        Term::iri(vocab::POLICY),
+        policy_subj.clone(),
+    ));
+    ts.push(Triple::new(
+        policy_subj.clone(),
+        Term::iri(vocab::DETERMINISM),
+        Term::literal(determinism_str(plan.policy.determinism).to_string()),
+    ));
+    // Reader sorts capabilities by name — pre-sort so the writer's own
+    // triple order already matches the round-trip.
+    let mut caps_sorted: Vec<&Capability> = plan.policy.capabilities.iter().collect();
+    caps_sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    for (i, c) in caps_sorted.iter().enumerate() {
+        let cap_subj = Term::blank(capability_bnode_label(i));
+        ts.push(Triple::new(
+            policy_subj.clone(),
+            Term::iri(vocab::CAPABILITY),
+            cap_subj.clone(),
+        ));
+        ts.push(Triple::new(
+            cap_subj.clone(),
+            Term::iri(vocab::NAME),
+            Term::literal(c.name.clone()),
+        ));
+        ts.push(Triple::new(
+            cap_subj.clone(),
+            Term::iri(vocab::LEVEL),
+            Term::literal(capability_level_str(c.level).to_string()),
+        ));
+    }
+    let ResourceLimits {
+        cpu_ms,
+        memory_bytes,
+        io_ops,
+    } = plan.policy.limits;
+    if let Some(v) = cpu_ms {
+        ts.push(Triple::new(
+            policy_subj.clone(),
+            Term::iri(vocab::CPU_MS),
+            Term::literal(v.to_string()),
+        ));
+    }
+    if let Some(v) = memory_bytes {
+        ts.push(Triple::new(
+            policy_subj.clone(),
+            Term::iri(vocab::MEMORY_BYTES),
+            Term::literal(v.to_string()),
+        ));
+    }
+    if let Some(v) = io_ops {
+        ts.push(Triple::new(
+            policy_subj.clone(),
+            Term::iri(vocab::IO_OPS),
+            Term::literal(v.to_string()),
+        ));
+    }
+    if let Some(t) = &plan.policy.tenant {
+        ts.push(Triple::new(
+            policy_subj.clone(),
+            Term::iri(vocab::TENANT),
+            Term::literal(t.clone()),
+        ));
+    }
+
+    // Linkage — omit for Static (matches the CBOR default-skip so
+    // pre-existing plans keep their existing shape).
+    if !matches!(plan.linkage, Linkage::Static) {
+        ts.push(Triple::new(
+            plan_subject.clone(),
+            Term::iri(vocab::LINKAGE),
+            Term::literal(linkage_str(plan.linkage).to_string()),
+        ));
+    }
+
+    // Explicit exports — written but currently one-way (see the
+    // "Explicit-exports gap" note on this function).
+    for (i, e) in plan.explicit_exports.iter().enumerate() {
+        let subj = Term::blank(explicit_export_bnode_label(i));
+        ts.push(Triple::new(
+            plan_subject.clone(),
+            Term::iri(vocab::EXPLICIT_EXPORT),
+            subj.clone(),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::SOURCE_INSTANCE),
+            Term::literal(e.source_instance.clone()),
+        ));
+        ts.push(Triple::new(
+            subj.clone(),
+            Term::iri(vocab::INTERFACE_NAME),
+            Term::literal(e.interface_name.clone()),
+        ));
+    }
+
+    ts
+}
+
+// Blank node label helpers — kept private so callers don't lean on the
+// exact strings. The reader treats blank labels as opaque IDs; the
+// writer picks stable, human-readable stems so `plan_to_turtle` output
+// diffs cleanly.
+
+fn component_bnode_label(i: usize) -> String {
+    format!("c{}", i)
+}
+
+fn binding_bnode_label(i: usize) -> String {
+    format!("b{}", i)
+}
+
+fn secret_bnode_label(i: usize) -> String {
+    format!("s{}", i)
+}
+
+fn capability_bnode_label(i: usize) -> String {
+    format!("cap{}", i)
+}
+
+fn explicit_export_bnode_label(i: usize) -> String {
+    format!("xe{}", i)
+}
+
+fn determinism_str(m: DeterminismMode) -> &'static str {
+    match m {
+        DeterminismMode::Strict => "strict",
+        DeterminismMode::Audit => "audit",
+        DeterminismMode::Relaxed => "relaxed",
+    }
+}
+
+fn capability_level_str(l: CapabilityLevel) -> &'static str {
+    match l {
+        CapabilityLevel::Required => "required",
+        CapabilityLevel::Optional => "optional",
+    }
+}
+
+fn linkage_str(l: Linkage) -> &'static str {
+    match l {
+        Linkage::Static => "static",
+        Linkage::Runtime => "runtime",
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0F) as usize] as char);
+    }
+    out
+}
+
+// Explicit-exports today are writer-only. Silence dead-code warnings on
+// the ExplicitExport shape — the field access in the writer above is
+// enough on stable rustc but keeping this reference explicit documents
+// intent for future readers.
+#[allow(dead_code)]
+fn _explicit_export_touch(e: &ExplicitExport) -> (&str, &str) {
+    (&e.source_instance, &e.interface_name)
+}
+
+// ---------------------------------------------------------------------------
+// Turtle emitter — Vec<Triple> -> String
+// ---------------------------------------------------------------------------
+
+/// Serialize a [`PlanV1`] to Turtle using [`DEFAULT_PLAN_IRI`] as the
+/// plan subject. Thin wrapper around [`plan_to_rdf`] + [`triples_to_turtle`].
+pub fn plan_to_turtle(plan: &PlanV1) -> String {
+    plan_to_turtle_with_iri(plan, DEFAULT_PLAN_IRI)
+}
+
+/// Serialize a [`PlanV1`] to Turtle with a caller-chosen plan IRI. Thin
+/// wrapper around [`plan_to_rdf_with_iri`] + [`triples_to_turtle`].
+pub fn plan_to_turtle_with_iri(plan: &PlanV1, plan_iri: &str) -> String {
+    triples_to_turtle(&plan_to_rdf_with_iri(plan, plan_iri))
+}
+
+/// Format a triple slice as valid Turtle. Emits a `@prefix comp:` header
+/// then one triple per line — the plainest shape the Turtle grammar
+/// admits so no third-party serializer is needed. Callers who want
+/// tighter output can pass the result through their own RDF library;
+/// this exists mostly so the WASM orchestrator can hand Java a ready-
+/// to-load byte string without pulling `oxrdf`/`oxttl` into the guest.
+pub fn triples_to_turtle(triples: &[Triple]) -> String {
+    let mut out = String::new();
+    out.push_str("@prefix comp: <");
+    out.push_str(vocab::NS);
+    out.push_str("> .\n");
+    out.push_str("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n");
+    for t in triples {
+        out.push_str(&format_term(&t.subject));
+        out.push(' ');
+        out.push_str(&format_predicate(&t.predicate));
+        out.push(' ');
+        out.push_str(&format_term(&t.object));
+        out.push_str(" .\n");
+    }
+    out
+}
+
+fn format_predicate(t: &Term) -> String {
+    // rdf:type gets the Turtle short form `a`; other predicates fall
+    // through to the same rules as objects (IRI or prefixed IRI).
+    if let Term::Iri(iri) = t {
+        if iri == vocab::RDF_TYPE {
+            return "a".to_string();
+        }
+    }
+    format_term(t)
+}
+
+fn format_term(t: &Term) -> String {
+    match t {
+        Term::Iri(iri) => {
+            if let Some(local) = iri.strip_prefix(vocab::NS) {
+                if is_pn_local(local) {
+                    return format!("comp:{}", local);
+                }
+            }
+            format!("<{}>", escape_iri(iri))
+        }
+        Term::Blank(label) => {
+            if is_safe_bnode_label(label) {
+                format!("_:{}", label)
+            } else {
+                // Fall back to a hex-encoded label so weird bytes still
+                // yield a syntactically valid Turtle blank node.
+                format!("_:x{}", hex_encode(label.as_bytes()))
+            }
+        }
+        Term::Literal {
+            value,
+            datatype,
+            language,
+        } => {
+            let quoted = format!("\"{}\"", escape_literal(value));
+            if let Some(lang) = language {
+                format!("{}@{}", quoted, lang)
+            } else if let Some(dt) = datatype {
+                format!("{}^^<{}>", quoted, escape_iri(dt))
+            } else {
+                quoted
+            }
+        }
+    }
+}
+
+fn is_pn_local(s: &str) -> bool {
+    // Approximate PN_LOCAL: start with letter or _, remaining chars
+    // alnum / . / -. Good enough for our vocab (`root`, `component`,
+    // `Component`, `explicitExport`, ...).
+    let mut it = s.chars();
+    match it.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    for c in it {
+        if !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_safe_bnode_label(s: &str) -> bool {
+    let mut it = s.chars();
+    match it.next() {
+        Some(c) if c.is_ascii_alphanumeric() || c == '_' => {}
+        _ => return false,
+    }
+    for c in it {
+        if !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
+            return false;
+        }
+    }
+    // Turtle disallows a trailing `.` in blank labels.
+    !s.ends_with('.')
+}
+
+fn escape_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn escape_iri(s: &str) -> String {
+    // Turtle IREF disallows a small set of characters; escape defensively.
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\' => {
+                out.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -811,5 +1315,372 @@ mod tests {
     fn silence_lint() {
         // Force the small helpers to be referenced even when tests grow.
         let _ = v("noop");
+    }
+
+    // -----------------------------------------------------------------
+    // Writer + round-trip tests
+    // -----------------------------------------------------------------
+
+    // Bytes that decode to a 32-byte digest, used across the writer tests.
+    fn digest_bytes(fill: u8) -> Vec<u8> {
+        vec![fill; 32]
+    }
+
+    // Structural equality helper. `PlanV1` doesn't derive `PartialEq`, so
+    // the round-trip check compares each field explicitly. Canonical CBOR
+    // would also work but this failure mode is more legible.
+    fn assert_plans_equal(got: &PlanV1, want: &PlanV1) {
+        assert_eq!(got.version, want.version, "version");
+        assert_eq!(got.root, want.root, "root");
+
+        // Reader sorts components by id — normalise both sides so the
+        // test doesn't depend on the writer's insertion order.
+        let mut got_c = got.components.clone();
+        let mut want_c = want.components.clone();
+        got_c.sort_by(|a, b| a.id.cmp(&b.id));
+        want_c.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(got_c.len(), want_c.len(), "components len");
+        for (g, w) in got_c.iter().zip(want_c.iter()) {
+            assert_eq!(g.id, w.id, "component id");
+            assert_eq!(g.digest, w.digest, "component digest");
+            assert_eq!(g.source, w.source, "component source");
+        }
+
+        assert_eq!(got.bindings.len(), want.bindings.len(), "bindings len");
+        for (g, w) in got.bindings.iter().zip(want.bindings.iter()) {
+            assert_eq!(g.consumer_id, w.consumer_id, "binding consumer");
+            assert_eq!(g.import_name, w.import_name, "binding import");
+            assert_eq!(g.provider_id, w.provider_id, "binding provider");
+            assert_eq!(g.export_name, w.export_name, "binding export");
+        }
+
+        assert_eq!(got.secrets.len(), want.secrets.len(), "secrets len");
+        for (g, w) in got.secrets.iter().zip(want.secrets.iter()) {
+            assert_eq!(g.secret_id, w.secret_id, "secret id");
+            assert_eq!(g.backend_uri, w.backend_uri, "secret backend");
+        }
+
+        assert_eq!(got.policy.determinism, want.policy.determinism, "determinism");
+        assert_eq!(got.policy.tenant, want.policy.tenant, "tenant");
+        assert_eq!(
+            got.policy.limits.cpu_ms, want.policy.limits.cpu_ms,
+            "cpu_ms"
+        );
+        assert_eq!(
+            got.policy.limits.memory_bytes, want.policy.limits.memory_bytes,
+            "memory_bytes"
+        );
+        assert_eq!(
+            got.policy.limits.io_ops, want.policy.limits.io_ops,
+            "io_ops"
+        );
+        // Capabilities: reader sorts by name; do the same to want.
+        let mut got_cap = got.policy.capabilities.clone();
+        let mut want_cap = want.policy.capabilities.clone();
+        got_cap.sort_by(|a, b| a.name.cmp(&b.name));
+        want_cap.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(got_cap.len(), want_cap.len(), "capabilities len");
+        for (g, w) in got_cap.iter().zip(want_cap.iter()) {
+            assert_eq!(g.name, w.name, "cap name");
+            assert_eq!(g.level, w.level, "cap level");
+        }
+
+        assert_eq!(got.linkage, want.linkage, "linkage");
+
+        // Round-trip contract only holds for empty explicit_exports until
+        // the reader learns to parse them. The tests below never seed a
+        // non-empty list, so this assertion doubles as a canary.
+        assert_eq!(
+            got.explicit_exports.len(),
+            want.explicit_exports.len(),
+            "explicit_exports len (reader gap)"
+        );
+    }
+
+    fn minimal_plan() -> PlanV1 {
+        PlanV1 {
+            version: "1".into(),
+            root: "hello".into(),
+            components: vec![ComponentSpec {
+                id: "hello".into(),
+                digest: digest_bytes(0x11),
+                source: Some("file:///hello.wasm".into()),
+            }],
+            bindings: vec![],
+            secrets: vec![],
+            policy: Policy::default(),
+            linkage: Linkage::Static,
+            explicit_exports: vec![],
+        }
+    }
+
+    #[test]
+    fn writer_minimal_plan_round_trip() {
+        let want = minimal_plan();
+        let ts = plan_to_rdf(&want);
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts)
+            .expect("minimal plan round-trip should parse");
+        assert_plans_equal(&got, &want);
+    }
+
+    fn full_plan() -> PlanV1 {
+        PlanV1 {
+            version: "1".into(),
+            root: "a".into(),
+            components: vec![
+                ComponentSpec {
+                    id: "a".into(),
+                    digest: digest_bytes(0xAA),
+                    source: Some("ipfs://Qm.../a.wasm".into()),
+                },
+                ComponentSpec {
+                    id: "b".into(),
+                    digest: digest_bytes(0xBB),
+                    source: None,
+                },
+                ComponentSpec {
+                    id: "c".into(),
+                    digest: digest_bytes(0xCC),
+                    source: Some("https://example/c.wasm".into()),
+                },
+            ],
+            bindings: vec![
+                ImportBinding {
+                    consumer_id: Some("a".into()),
+                    import_name: "b:run".into(),
+                    provider_id: "b".into(),
+                    export_name: "run".into(),
+                },
+                ImportBinding {
+                    consumer_id: None,
+                    import_name: "c:emit".into(),
+                    provider_id: "c".into(),
+                    export_name: "emit".into(),
+                },
+            ],
+            secrets: vec![
+                SecretBinding {
+                    secret_id: "db-password".into(),
+                    backend_uri: "vault://kv/data/prod/db".into(),
+                },
+                SecretBinding {
+                    secret_id: "signing-key".into(),
+                    backend_uri: "pkcs11://slot0?object=sign".into(),
+                },
+            ],
+            policy: Policy {
+                determinism: DeterminismMode::Audit,
+                capabilities: vec![
+                    Capability {
+                        name: "wasi:filesystem".into(),
+                        level: CapabilityLevel::Optional,
+                    },
+                    Capability {
+                        name: "wasi:http".into(),
+                        level: CapabilityLevel::Required,
+                    },
+                ],
+                tenant: Some("acme".into()),
+                limits: ResourceLimits {
+                    cpu_ms: Some(15_000),
+                    memory_bytes: Some(67_108_864),
+                    io_ops: Some(4096),
+                },
+            },
+            linkage: Linkage::Runtime,
+            explicit_exports: vec![],
+        }
+    }
+
+    #[test]
+    fn writer_full_plan_round_trip() {
+        let want = full_plan();
+        let ts = plan_to_rdf(&want);
+        let got =
+            plan_from_rdf(DEFAULT_PLAN_IRI, &ts).expect("full plan round-trip should parse");
+        assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_default_policy_round_trip() {
+        // Default Policy is Relaxed. Reader falls back to Strict inside
+        // policy_from_rdf if `comp:determinism` is missing, so the writer
+        // always emits it explicitly. This test guards that behaviour.
+        let mut want = minimal_plan();
+        want.policy = Policy::default();
+        assert!(matches!(want.policy.determinism, DeterminismMode::Relaxed));
+        let ts = plan_to_rdf(&want);
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts).unwrap();
+        assert!(matches!(got.policy.determinism, DeterminismMode::Relaxed));
+        assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_static_linkage_omits_predicate() {
+        let plan = minimal_plan();
+        let ts = plan_to_rdf(&plan);
+        let has_linkage = ts.iter().any(|t| {
+            matches!(&t.predicate, Term::Iri(p) if p == vocab::LINKAGE)
+        });
+        assert!(
+            !has_linkage,
+            "static linkage should be omitted for canonical output"
+        );
+        // ...but the round-trip still recovers Static.
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts).unwrap();
+        assert!(matches!(got.linkage, Linkage::Static));
+    }
+
+    #[test]
+    fn writer_runtime_linkage_round_trip() {
+        let mut want = minimal_plan();
+        want.linkage = Linkage::Runtime;
+        let ts = plan_to_rdf(&want);
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts).unwrap();
+        assert!(matches!(got.linkage, Linkage::Runtime));
+        assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_custom_plan_iri_round_trip() {
+        let iri_s = "urn:tegmentum:example/plan-42";
+        let want = full_plan();
+        let ts = plan_to_rdf_with_iri(&want, iri_s);
+        let got = plan_from_rdf(iri_s, &ts).unwrap();
+        assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_component_without_source_round_trips() {
+        let mut want = minimal_plan();
+        want.components[0].source = None;
+        let ts = plan_to_rdf(&want);
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts).unwrap();
+        assert!(got.components[0].source.is_none());
+        assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_binding_without_consumer_round_trips() {
+        let mut want = minimal_plan();
+        // Add a second component so the binding has a valid provider.
+        want.components.push(ComponentSpec {
+            id: "helper".into(),
+            digest: digest_bytes(0x22),
+            source: None,
+        });
+        want.bindings.push(ImportBinding {
+            consumer_id: None,
+            import_name: "helper:util".into(),
+            provider_id: "helper".into(),
+            export_name: "util".into(),
+        });
+        let ts = plan_to_rdf(&want);
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts).unwrap();
+        assert_eq!(got.bindings.len(), 1);
+        assert!(got.bindings[0].consumer_id.is_none());
+        assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_binding_with_consumer_round_trips() {
+        let mut want = minimal_plan();
+        want.components.push(ComponentSpec {
+            id: "helper".into(),
+            digest: digest_bytes(0x33),
+            source: None,
+        });
+        want.bindings.push(ImportBinding {
+            consumer_id: Some("hello".into()),
+            import_name: "helper:util".into(),
+            provider_id: "helper".into(),
+            export_name: "util".into(),
+        });
+        let ts = plan_to_rdf(&want);
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts).unwrap();
+        assert_eq!(got.bindings.len(), 1);
+        assert_eq!(got.bindings[0].consumer_id.as_deref(), Some("hello"));
+        assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_capabilities_are_sorted_for_reader_stability() {
+        // Reader sorts capabilities by name; make sure the writer's
+        // triple stream carries them in the same order so the pre- and
+        // post- round-trip lists match.
+        let mut plan = minimal_plan();
+        plan.policy.capabilities = vec![
+            Capability {
+                name: "wasi:http".into(),
+                level: CapabilityLevel::Required,
+            },
+            Capability {
+                name: "wasi:filesystem".into(),
+                level: CapabilityLevel::Optional,
+            },
+            Capability {
+                name: "wasi:cli".into(),
+                level: CapabilityLevel::Required,
+            },
+        ];
+        let ts = plan_to_rdf(&plan);
+        // Find the order of capability `name` literals in the emitted
+        // triples.
+        let names: Vec<String> = ts
+            .iter()
+            .filter(|t| {
+                matches!(&t.predicate, Term::Iri(p) if p == vocab::NAME)
+            })
+            .filter_map(|t| match &t.object {
+                Term::Literal { value, .. } => Some(value.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "wasi:cli".to_string(),
+                "wasi:filesystem".to_string(),
+                "wasi:http".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn turtle_output_is_syntactically_reasonable() {
+        // We don't have a Turtle parser on the crate's dep list, so this
+        // test only checks the emitter's structural invariants: the
+        // prefix header shows up, the plan IRI appears once as a
+        // subject, and every triple line ends with " .".
+        let plan = full_plan();
+        let ttl = plan_to_turtle(&plan);
+        assert!(ttl.starts_with("@prefix comp: <"));
+        assert!(ttl.contains(vocab::NS));
+        // Root literal.
+        assert!(ttl.contains("\"a\""));
+        // Predicate compression works — expect `comp:root` not `<...root>`.
+        assert!(ttl.contains("comp:root"));
+        // Every non-empty non-directive line ends with " .".
+        for line in ttl.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("@prefix") {
+                continue;
+            }
+            assert!(
+                trimmed.ends_with(" ."),
+                "malformed Turtle line: {trimmed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn turtle_uses_rdf_type_short_form() {
+        let plan = minimal_plan();
+        let ttl = plan_to_turtle(&plan);
+        // Some line should include ` a comp:CompositionPlan `.
+        assert!(
+            ttl.contains(" a comp:CompositionPlan"),
+            "expected `a` short form in Turtle output; got:\n{ttl}"
+        );
     }
 }

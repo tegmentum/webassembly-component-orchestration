@@ -11,6 +11,12 @@ publish = false
 anyhow = "1"
 tracing = "0.1"
 compose-core = { path = "../compose-core" }
+# Turtle parser for the reverse direction: plan-from-turtle. oxttl is
+# self-contained (no I/O, no async) and already targets wasm cleanly in
+# the sibling oxigraph-wasm crate. oxrdf is oxttl's term crate — we
+# reach into it directly to destructure the parsed triples.
+oxttl = "0.2"
+oxrdf = "0.3"
 
 [dev-dependencies]
 serde_json = "1"

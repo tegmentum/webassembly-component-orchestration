@@ -305,6 +305,77 @@ pub fn plan_from_rdf(plan_iri: &str, triples: &[Triple]) -> Result<PlanV1> {
 }
 
 // ---------------------------------------------------------------------------
+// Turtle parser — String -> PlanV1
+// ---------------------------------------------------------------------------
+
+/// Parse a Turtle document and reconstruct a [`PlanV1`] rooted at
+/// [`DEFAULT_PLAN_IRI`]. See [`plan_from_turtle_with_iri`] for details.
+pub fn plan_from_turtle(turtle: &str) -> Result<PlanV1> {
+    plan_from_turtle_with_iri(turtle, DEFAULT_PLAN_IRI)
+}
+
+/// Parse a Turtle document and reconstruct a [`PlanV1`] rooted at
+/// `plan_iri`. The Turtle must describe the plan using the vocabulary
+/// documented in the crate-level comment.
+///
+/// This is the reader half of the round trip: `plan_from_turtle(
+/// plan_to_turtle(p))` yields `p` for any plan whose
+/// `explicit_exports` list is empty (the reader's current limit — see
+/// [`plan_from_rdf`]).
+pub fn plan_from_turtle_with_iri(turtle: &str, plan_iri: &str) -> Result<PlanV1> {
+    let triples = turtle_to_triples(turtle)?;
+    plan_from_rdf(plan_iri, &triples)
+}
+
+/// Parse a Turtle document into a [`Vec<Triple>`] using our lossy
+/// `Term`/`Triple` shape. Delegates to [`oxttl::TurtleParser`] for the
+/// heavy lifting.
+fn turtle_to_triples(turtle: &str) -> Result<Vec<Triple>> {
+    use oxrdf::Term as OxTerm;
+    use oxttl::TurtleParser;
+
+    let mut out = Vec::new();
+    for res in TurtleParser::new().for_slice(turtle.as_bytes()) {
+        let t = res.map_err(|e| anyhow!("turtle parse error: {e}"))?;
+        let subject = match t.subject {
+            oxrdf::NamedOrBlankNode::NamedNode(n) => Term::Iri(n.into_string()),
+            oxrdf::NamedOrBlankNode::BlankNode(b) => Term::Blank(b.into_string()),
+        };
+        let predicate = Term::Iri(t.predicate.into_string());
+        let object = match t.object {
+            OxTerm::NamedNode(n) => Term::Iri(n.into_string()),
+            OxTerm::BlankNode(b) => Term::Blank(b.into_string()),
+            OxTerm::Literal(l) => {
+                // destruct = (lexical, datatype, language). oxttl always
+                // stamps the datatype (xsd:string when neither language
+                // nor explicit datatype was provided); we normalize
+                // xsd:string away for round-trip parity with
+                // `plan_to_turtle`.
+                let (value, datatype_nn, language) = l.destruct();
+                let datatype_iri = datatype_nn.map(|n| n.into_string());
+                let datatype = match (&language, &datatype_iri) {
+                    (Some(_), _) => None,
+                    (None, Some(iri))
+                        if iri == "http://www.w3.org/2001/XMLSchema#string" =>
+                    {
+                        None
+                    }
+                    (None, Some(_)) => datatype_iri,
+                    (None, None) => None,
+                };
+                Term::Literal {
+                    value,
+                    datatype,
+                    language,
+                }
+            }
+        };
+        out.push(Triple::new(subject, predicate, object));
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // Field parsers
 // ---------------------------------------------------------------------------
 
@@ -1682,5 +1753,37 @@ mod tests {
             ttl.contains(" a comp:CompositionPlan"),
             "expected `a` short form in Turtle output; got:\n{ttl}"
         );
+    }
+
+    #[test]
+    fn turtle_round_trip_minimal_plan() {
+        // plan_to_turtle -> plan_from_turtle should reconstruct the plan
+        // (modulo explicit_exports, which the reader stubs out).
+        let plan = minimal_plan();
+        let ttl = plan_to_turtle(&plan);
+        let parsed = plan_from_turtle(&ttl)
+            .unwrap_or_else(|e| panic!("plan_from_turtle failed: {e:#}\n---\n{ttl}"));
+        assert_eq!(parsed.version, plan.version);
+        assert_eq!(parsed.root, plan.root);
+        assert_eq!(parsed.components.len(), plan.components.len());
+        assert_eq!(parsed.components[0].id, plan.components[0].id);
+    }
+
+    #[test]
+    fn turtle_round_trip_with_custom_iri() {
+        let plan = minimal_plan();
+        let iri = "urn:custom:plan-1";
+        let ttl = plan_to_turtle_with_iri(&plan, iri);
+        let parsed = plan_from_turtle_with_iri(&ttl, iri)
+            .unwrap_or_else(|e| panic!("plan_from_turtle_with_iri failed: {e:#}\n---\n{ttl}"));
+        assert_eq!(parsed.root, plan.root);
+    }
+
+    #[test]
+    fn turtle_from_string_bad_syntax_errors() {
+        let bad = "this is not turtle @@@";
+        let e = plan_from_turtle(bad).expect_err("expected parse error");
+        let msg = format!("{e}");
+        assert!(msg.contains("turtle parse error"), "unexpected error: {msg}");
     }
 }

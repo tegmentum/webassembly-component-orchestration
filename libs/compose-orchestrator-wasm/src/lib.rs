@@ -354,6 +354,29 @@ impl RdfGuest for Component {
             .map_err(adapters::core_err_to_wit)?;
         Ok(compose_rdf::plan_to_turtle_with_iri(&plan, &plan_iri))
     }
+
+    fn plan_from_turtle(turtle: String) -> Result<Vec<u8>, WitError> {
+        let plan = compose_rdf::plan_from_turtle(&turtle).map_err(|e| WitError {
+            code: WitErrorCode::InvalidInput,
+            message: format!("plan-from-turtle: {e:#}"),
+            context: None,
+        })?;
+        compose_core::plan::serialize(&plan).map_err(adapters::core_err_to_wit)
+    }
+
+    fn plan_from_turtle_with_iri(
+        turtle: String,
+        plan_iri: String,
+    ) -> Result<Vec<u8>, WitError> {
+        let plan = compose_rdf::plan_from_turtle_with_iri(&turtle, &plan_iri).map_err(|e| {
+            WitError {
+                code: WitErrorCode::InvalidInput,
+                message: format!("plan-from-turtle-with-iri: {e:#}"),
+                context: None,
+            }
+        })?;
+        compose_core::plan::serialize(&plan).map_err(adapters::core_err_to_wit)
+    }
 }
 
 impl TrustGuest for Component {

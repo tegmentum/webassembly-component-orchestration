@@ -33,4 +33,25 @@ interface rdf {
   /// or tenant-namespaced subject IRI.
   plan-to-turtle-with-iri: func(plan-cbor: list<u8>, plan-iri: string)
     -> result<string, error>;
+
+  /// Reader half of the Turtle round trip. Parses a Turtle document
+  /// whose plan subject is the orchestrator's default
+  /// (`urn:composition:plan`) and returns the canonical CBOR bytes of
+  /// the reconstructed `plan-v1` — the same bytes the
+  /// `plan.serialize` export would produce for the same plan.
+  ///
+  /// Enables graph-store-native composition entry points: outer hosts
+  /// (Stardog SPARQL SERVICE, oxigraph tools, composectl over stdin)
+  /// can hand the orchestrator arbitrary Turtle without knowing the
+  /// CBOR wire format, get CBOR back, and hand that to
+  /// `emit#compose` (via `plan#deserialize`).
+  ///
+  /// Errors: `invalid-input` for malformed Turtle or a document that
+  /// doesn't parse as a valid `plan-v1`.
+  plan-from-turtle: func(turtle: string) -> result<list<u8>, error>;
+
+  /// Same as `plan-from-turtle` but the caller specifies the plan
+  /// subject IRI — must match whatever IRI was used at write time.
+  plan-from-turtle-with-iri: func(turtle: string, plan-iri: string)
+    -> result<list<u8>, error>;
 }

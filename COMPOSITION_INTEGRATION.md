@@ -338,6 +338,59 @@ see `plan_to_rdf`, `plan_to_turtle`, and `plan_from_rdf`.
    reader are round-trip lossless, a later `wf:compose` invocation can
    consume the same graph unchanged.
 
+## Host stub components
+
+The compose-orchestrator wasm declares imports that model the handoff
+from the native embedder. In a real deployment those imports are
+satisfied by adapter components the embedder ships (a wasmtime adapter
+for `tegmentum:runtime`; a startup wrapper for `host:bootstrap`; a
+probe for `compose:host/runtime-info`).
+
+For plugin embedders that only need the composed orchestrator to
+answer `sys:compose/*` calls -- notably the Stardog / webassembly4j
+path this repo is currently oriented around -- writing those adapters
+in the host is disproportionate work. Instead, `libs/host-stubs/`
+ships three trivial static-return components that satisfy each
+functional import at `wac plug` time:
+
+| Import                                    | Satisfied by         | Behaviour                                             |
+| ----------------------------------------- | -------------------- | ----------------------------------------------------- |
+| `compose:host/runtime-info@0.1.0`         | `runtime-info-stub`  | Returns fixed fingerprint (`stardog` / `1.0.0` / empty features / `jvm`). |
+| `host:bootstrap/bootstrap@0.1.0`          | `bootstrap-stub`     | Returns empty args list.                              |
+| `tegmentum:runtime/control@0.1.0`         | `runtime-control-stub` | No-op resource constructor; never actually invoked by the orchestrator today. |
+
+`libs/compose-orchestrator-wasm/build.sh` builds all three stubs via
+`cargo component build --target wasm32-wasip2` (inside the host-stubs
+workspace) and adds them to the `wac plug` chain after the secure-log
+stack. After composition the orchestrator's residual imports are:
+
+- All standard WASI interfaces (`wasi:filesystem`, `wasi:clocks`,
+  `wasi:random`, `wasi:io`, `wasi:cli`).
+- `sys:compose/types@1.0.0` -- type-only contract with no functions;
+  contributes nothing at instantiation time.
+
+The Java host (webassembly4j) only needs to wire WASI; the composed
+orchestrator instantiates without any custom component-model host
+functions.
+
+### Replacing a stub with a real implementation
+
+Every stub path in `build.sh` is overridable via an env var
+(`RUNTIME_INFO_STUB_WASM`, `BOOTSTRAP_STUB_WASM`,
+`RUNTIME_CONTROL_STUB_WASM`). A downstream consumer that ships a real
+runtime backend or a real bootstrap adapter can drop the corresponding
+wasm into the plug chain without editing the script or recompiling the
+orchestrator.
+
+The stubs are static-return today because the orchestrator uses each
+import in a narrow way (fingerprint mixed into the exec-key; args
+inspected for count only; runtime constructor referenced only as a
+function pointer under `core::hint::black_box`). As the orchestrator's
+Rust implementation grows to actually drive `tegmentum:runtime` for
+in-guest instantiation, the stubs will need real behaviour -- at which
+point real adapter components replace them and the stubs stay as the
+minimum-viable fallback for embedders that opt out of that feature.
+
 ## Future Enhancements
 
 1. **Parallel composition**: Compose multiple plans concurrently

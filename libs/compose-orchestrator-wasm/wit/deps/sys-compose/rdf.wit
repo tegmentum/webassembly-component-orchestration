@@ -34,6 +34,30 @@ interface rdf {
   plan-to-turtle-with-iri: func(plan-cbor: list<u8>, plan-iri: string)
     -> result<string, error>;
 
+  /// Same as `plan-to-turtle-with-iri` but additionally emits two
+  /// composed-artifact anchor triples that let downstream admins
+  /// SPARQL-join composition RDF against extension grants:
+  ///
+  /// - `<plan-iri> comp:hasArtifact <artifact-url>` — REQUIRED; the
+  ///   URL the composed wasm is served from. Any URL scheme is valid
+  ///   (`sha256://`, `https://`, `file://`, `ipfs://`, ...). The
+  ///   plugin's default is `sha256://<hex>` from its content-addressed
+  ///   blob store; an operator re-hosting the composed artifact
+  ///   elsewhere SPARQL-UPDATEs this triple to reflect the new URL.
+  /// - `<plan-iri> comp:compositionDigest "<hex>"` — OPTIONAL; only
+  ///   emitted when `digest-hex` is `some(...)`. SHA-256 of the
+  ///   composed bytes as a lowercase-hex `xsd:string` literal.
+  ///   Stable across URL re-hosting — the content-identity anchor.
+  ///
+  /// The reader (`plan-from-turtle`, `plan-from-turtle-with-iri`)
+  /// silently ignores both anchor predicates for round-trip stability.
+  plan-to-turtle-with-artifact: func(
+    plan-cbor: list<u8>,
+    plan-iri: string,
+    artifact-url: string,
+    digest-hex: option<string>,
+  ) -> result<string, error>;
+
   /// Reader half of the Turtle round trip. Parses a Turtle document
   /// whose plan subject is the orchestrator's default
   /// (`urn:composition:plan`) and returns the canonical CBOR bytes of

@@ -279,6 +279,65 @@ cargo test -p compose-host-wasmtime emit::tests
 | **Performance** | Import resolution overhead | Optimized static linking |
 | **Correctness** | Runtime errors possible | Validated at build time |
 
+## Turtle output
+
+For hosts that want to expose a composition plan through a graph store
+(e.g. the Stardog `wf:compose` plugin), the orchestrator's WIT surface
+now includes a Turtle-serialization export:
+
+```wit
+package sys:compose@1.0.0;
+
+interface rdf {
+  use types.{error};
+
+  plan-to-turtle: func(plan-cbor: list<u8>) -> result<string, error>;
+
+  plan-to-turtle-with-iri: func(plan-cbor: list<u8>, plan-iri: string)
+    -> result<string, error>;
+}
+```
+
+Both functions take the canonical CBOR bytes produced by
+`sys:compose/plan.serialize` and return a UTF-8 Turtle document. The
+default plan IRI is `urn:composition:plan`; call
+`plan-to-turtle-with-iri` when you want a stable, plan-digest- or
+tenant-namespaced subject.
+
+### Vocabulary
+
+The Turtle document uses the composition vocabulary at
+`http://tegmentum.ai/ns/composition/` (prefix `comp:`). Predicates
+mirror the `PlanV1` fields one-for-one:
+
+| Predicate | Domain | Range |
+|-----------|--------|-------|
+| `comp:version` | plan | string literal |
+| `comp:root` | plan | component-id literal |
+| `comp:component` | plan | blank node (Component) |
+| `comp:binding` | plan | blank node (ImportBinding) |
+| `comp:secret` | plan | blank node (SecretBinding) |
+| `comp:policy` | plan | blank node (Policy) |
+| `comp:linkage` | plan | `"static"` \| `"runtime"` |
+| `comp:id` | Component | string literal |
+| `comp:digest` | Component | `"sha256:<hex>"` literal |
+| `comp:source` | Component | source URL literal |
+| `comp:import` / `comp:provider` / `comp:export` / `comp:consumer` | ImportBinding | string literals |
+
+The full round-trip (writer + reader) lives in `libs/compose-rdf`;
+see `plan_to_rdf`, `plan_to_turtle`, and `plan_from_rdf`.
+
+### Consumer flow (Stardog example)
+
+1. Client code fires a SPARQL query with `wf:compose(<plan-graph>, …)`.
+2. The plugin loads the plan graph, hands it to the orchestrator, and
+   the orchestrator returns the composed `.wasm` bytes plus a Turtle
+   document (via `plan-to-turtle`).
+3. The plugin inserts the Turtle into a named graph so downstream
+   queries can inspect what was composed. Because the writer and
+   reader are round-trip lossless, a later `wf:compose` invocation can
+   consume the same graph unchanged.
+
 ## Future Enhancements
 
 1. **Parallel composition**: Compose multiple plans concurrently

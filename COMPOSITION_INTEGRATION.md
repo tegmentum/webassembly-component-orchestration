@@ -295,14 +295,41 @@ interface rdf {
 
   plan-to-turtle-with-iri: func(plan-cbor: list<u8>, plan-iri: string)
     -> result<string, error>;
+
+  plan-to-turtle-with-artifact: func(
+      plan-cbor: list<u8>,
+      plan-iri: string,
+      artifact-url: string,
+      digest-hex: option<string>,
+  ) -> result<string, error>;
 }
 ```
 
-Both functions take the canonical CBOR bytes produced by
-`sys:compose/plan.serialize` and return a UTF-8 Turtle document. The
-default plan IRI is `urn:composition:plan`; call
+Both `plan-to-turtle` and `plan-to-turtle-with-iri` take the canonical
+CBOR bytes produced by `sys:compose/plan.serialize` and return a UTF-8
+Turtle document. The default plan IRI is `urn:composition:plan`; call
 `plan-to-turtle-with-iri` when you want a stable, plan-digest- or
 tenant-namespaced subject.
+
+`plan-to-turtle-with-artifact` additionally emits two composed-artifact
+anchor triples on top of the standard plan RDF:
+
+- `<plan-iri> comp:hasArtifact <artifact-url>` — REQUIRED; the URL the
+  composed wasm is served from. Any URL scheme is valid — the plugin's
+  default is `sha256://<hex>` (its in-tree content-addressed blob
+  store), but operators re-hosting the composed artifact to
+  `https://cdn.example.com/…` or `ipfs://Qm…` simply SPARQL-UPDATE the
+  triple.
+- `<plan-iri> comp:compositionDigest "<hex>"` — OPTIONAL; emitted only
+  when `digest-hex` is `some(...)`. SHA-256 of the composed bytes as a
+  lowercase-hex `xsd:string`. Stable across URL re-hosting — the
+  content-identity anchor.
+
+The reader (`plan-from-turtle`, `plan-from-turtle-with-iri`) silently
+ignores both anchor predicates so plans carrying them still round-trip.
+Downstream admins can SPARQL-join composition RDF directly against
+extension-grant triples via the `comp:hasArtifact` object without
+maintaining a side registry.
 
 ### Vocabulary
 
@@ -323,6 +350,8 @@ mirror the `PlanV1` fields one-for-one:
 | `comp:digest` | Component | `"sha256:<hex>"` literal |
 | `comp:source` | Component | source URL literal |
 | `comp:import` / `comp:provider` / `comp:export` / `comp:consumer` | ImportBinding | string literals |
+| `comp:hasArtifact` | plan | artifact URL (IRI) — emitted by `plan-to-turtle-with-artifact` |
+| `comp:compositionDigest` | plan | composed-bytes SHA-256 hex literal — optional; emitted by `plan-to-turtle-with-artifact` |
 
 The full round-trip (writer + reader) lives in `libs/compose-rdf`;
 see `plan_to_rdf`, `plan_to_turtle`, and `plan_from_rdf`.

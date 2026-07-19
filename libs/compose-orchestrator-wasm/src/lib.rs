@@ -16,10 +16,13 @@
 //!   `is-trusted`, `trust-digest`, `untrust-digest`. Bridges to
 //!   `compose_core::trust::TrustStore` at [`TRUST_DIR`].
 //! - `sys:compose/rdf@1.0.0` — `plan-to-turtle`,
-//!   `plan-to-turtle-with-iri`. Decodes canonical CBOR plan bytes
-//!   (via `compose_core::plan::deserialize`) and hands the result to
-//!   `compose_rdf::plan_to_turtle`. Pure computation; no preopens
-//!   required.
+//!   `plan-to-turtle-with-iri`, `plan-to-turtle-with-artifact`,
+//!   `plan-from-turtle`, `plan-from-turtle-with-iri`. Decodes canonical
+//!   CBOR plan bytes (via `compose_core::plan::deserialize`) and hands
+//!   the result to the matching `compose_rdf` writer; the
+//!   with-artifact variant additionally emits comp:hasArtifact +
+//!   optional comp:compositionDigest anchors. Pure computation; no
+//!   preopens required.
 //!
 //! Not yet exported: `sys:compose/exec@1.0.0` (needs a wasm runtime
 //! inside the guest) and `sys:compose/events@1.0.0` (the compose-core
@@ -353,6 +356,22 @@ impl RdfGuest for Component {
         let plan = compose_core::plan::deserialize(&plan_cbor)
             .map_err(adapters::core_err_to_wit)?;
         Ok(compose_rdf::plan_to_turtle_with_iri(&plan, &plan_iri))
+    }
+
+    fn plan_to_turtle_with_artifact(
+        plan_cbor: Vec<u8>,
+        plan_iri: String,
+        artifact_url: String,
+        digest_hex: Option<String>,
+    ) -> Result<String, WitError> {
+        let plan = compose_core::plan::deserialize(&plan_cbor)
+            .map_err(adapters::core_err_to_wit)?;
+        Ok(compose_rdf::plan_to_turtle_with_artifact(
+            &plan,
+            &plan_iri,
+            &artifact_url,
+            digest_hex.as_deref(),
+        ))
     }
 
     fn plan_from_turtle(turtle: String) -> Result<Vec<u8>, WitError> {

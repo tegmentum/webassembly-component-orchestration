@@ -21,5 +21,6 @@ exclude = [
     "examples/dynlink-dlopen-guest",
     "examples/hello-component",
     "libs/compose-orchestrator-wasm",
+    "libs/host-stubs",
 ]
 resolver = "2"

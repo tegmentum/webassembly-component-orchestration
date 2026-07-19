@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "runtime-info-stub",
+    "bootstrap-stub",
+    "runtime-control-stub",
+]
+
+# Stub host components that satisfy the compose orchestrator's
+# non-WASI, non-secure-log imports at `wac plug` time. Each crate
+# builds a self-contained wasm32-wasip2 component with static-return
+# implementations. See ./README.md for the taxonomy.
+#
+# This is a SEPARATE workspace from the top-level compose repo
+# workspace (the top-level workspace excludes wasm32-wasip2 crates
+# so its native-target build stays clean).
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+wit-bindgen = "0.57"
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }

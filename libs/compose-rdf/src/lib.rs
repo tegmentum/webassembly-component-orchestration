@@ -430,10 +430,10 @@ fn component_from_rdf(subject: &Term, index: &TripleIndex<'_>) -> Result<Compone
     Ok(ComponentSpec { id, digest, source })
 }
 
-fn binding_from_rdf<'a>(
+fn binding_from_rdf(
     subject: &Term,
     index: &TripleIndex<'_>,
-    known_ids: &BTreeMap<String, &'a Term>,
+    known_ids: &BTreeMap<String, &Term>,
 ) -> Result<ImportBinding> {
     let import_name = index
         .literal(subject, vocab::IMPORT)
@@ -599,7 +599,7 @@ fn parse_digest(s: &str) -> Result<Digest> {
 }
 
 fn hex_decode(hex: &str) -> Result<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         bail!("hex string has odd length");
     }
     let mut out = Vec::with_capacity(hex.len() / 2);

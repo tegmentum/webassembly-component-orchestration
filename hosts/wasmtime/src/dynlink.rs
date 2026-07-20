@@ -829,10 +829,7 @@ pub fn run_cli_with_endpoint(
     let exit_code = match command.wasi_cli_run().call_run(&mut store) {
         Ok(Ok(())) => 0u32,
         Ok(Err(())) => 1u32,
-        Err(e) => match exit_or_trap(e, "consumer", &stdout, &stderr) {
-            Ok(code) => code,
-            Err(err) => return Err(err),
-        },
+        Err(e) => exit_or_trap(e, "consumer", &stdout, &stderr)?,
     };
 
     drop(store);
@@ -933,10 +930,7 @@ pub fn run_cli_dlopen(
     let exit_code = match command.wasi_cli_run().call_run(&mut store) {
         Ok(Ok(())) => 0u32,
         Ok(Err(())) => 1u32,
-        Err(e) => match exit_or_trap(e, "guest", &stdout, &stderr) {
-            Ok(code) => code,
-            Err(err) => return Err(err),
-        },
+        Err(e) => exit_or_trap(e, "guest", &stdout, &stderr)?,
     };
 
     let resolved = store.data().resolved_providers().clone();

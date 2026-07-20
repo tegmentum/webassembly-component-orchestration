@@ -287,7 +287,11 @@ impl EmitHandler {
     ) -> Result<Vec<u8>, Error> {
         // Prefer the wac CLI if it's available — it handles inter-plug
         // wiring that the wac-graph library doesn't yet.
-        if std::process::Command::new("wac").arg("--version").output().is_ok() {
+        if std::process::Command::new("wac")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             return self.compose_with_wac_cli(plan, component_map);
         }
         self.compose_with_wac_graph(plan, component_map)
@@ -442,10 +446,7 @@ impl EmitHandler {
             .map_err(|e| {
                 Error::new(
                     ErrorCode::EmitCompositionFailed,
-                    format!(
-                        "wac: register plug package {}: {}",
-                        binding.provider_id, e
-                    ),
+                    format!("wac: register plug package {}: {}", binding.provider_id, e),
                 )
             })?;
             let dep_id = graph.register_package(dep_pkg).map_err(|e| {
@@ -536,19 +537,12 @@ impl EmitHandler {
                             graph.types()[socket_ty]
                                 .imports
                                 .iter()
-                                .find(|(import_name, _)| {
-                                    are_semver_compatible(name, import_name)
-                                })
+                                .find(|(import_name, _)| are_semver_compatible(name, import_name))
                                 .map(|(import_name, ty)| (import_name.clone(), ty))
                         });
                     if let Some((socket_name, socket_ty_id)) = matching_import {
                         if checker
-                            .is_subtype(
-                                *plug_ty_id,
-                                graph.types(),
-                                *socket_ty_id,
-                                graph.types(),
-                            )
+                            .is_subtype(*plug_ty_id, graph.types(), *socket_ty_id, graph.types())
                             .is_ok()
                         {
                             matches.push((name.clone(), socket_name));
@@ -565,24 +559,19 @@ impl EmitHandler {
             plug_instantiations.insert(plug_component_id.clone(), plug_inst);
             any_plugged = true;
             for (plug_name, socket_name) in matches {
-                let alias =
-                    graph
-                        .alias_instance_export(plug_inst, &plug_name)
-                        .map_err(|e| {
-                            Error::new(
-                                ErrorCode::EmitCompositionFailed,
-                                format!(
-                                    "wac: alias {}::{} for wiring: {}",
-                                    plug_component_id, plug_name, e
-                                ),
-                            )
-                        })?;
+                let alias = graph
+                    .alias_instance_export(plug_inst, &plug_name)
+                    .map_err(|e| {
+                        Error::new(
+                            ErrorCode::EmitCompositionFailed,
+                            format!(
+                                "wac: alias {}::{} for wiring: {}",
+                                plug_component_id, plug_name, e
+                            ),
+                        )
+                    })?;
                 graph
-                    .set_instantiation_argument(
-                        socket_instantiation,
-                        &socket_name,
-                        alias,
-                    )
+                    .set_instantiation_argument(socket_instantiation, &socket_name, alias)
                     .map_err(|e| {
                         Error::new(
                             ErrorCode::EmitCompositionFailed,
@@ -611,15 +600,14 @@ impl EmitHandler {
             .cloned()
             .collect();
         for name in socket_export_names {
-            let alias =
-                graph
-                    .alias_instance_export(socket_instantiation, &name)
-                    .map_err(|e| {
-                        Error::new(
-                            ErrorCode::EmitCompositionFailed,
-                            format!("wac: alias socket export {}: {}", name, e),
-                        )
-                    })?;
+            let alias = graph
+                .alias_instance_export(socket_instantiation, &name)
+                .map_err(|e| {
+                    Error::new(
+                        ErrorCode::EmitCompositionFailed,
+                        format!("wac: alias socket export {}: {}", name, e),
+                    )
+                })?;
             graph.export(alias, &name).map_err(|e| {
                 Error::new(
                     ErrorCode::EmitCompositionFailed,

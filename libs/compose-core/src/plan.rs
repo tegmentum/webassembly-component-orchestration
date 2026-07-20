@@ -484,6 +484,10 @@ mod tests {
             },
         ];
         let err = validator.validate_structure(&plan).unwrap_err();
-        assert!(matches!(err.code, ErrorCode::PlanInvalidSchema), "{:?}", err);
+        assert!(
+            matches!(err.code, ErrorCode::PlanInvalidSchema),
+            "{:?}",
+            err
+        );
     }
 }

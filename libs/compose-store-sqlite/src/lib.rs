@@ -122,8 +122,7 @@ impl SqliteComposeStore {
     /// digest-keyed lookups match what the orchestrator computes.
     pub fn put(&mut self, name: &str, plan: &PlanV1) -> Result<()> {
         let body = serialize(plan).map_err(|e| anyhow!("serialize plan: {e}"))?;
-        let digest = compute_plan_digest(plan)
-            .map_err(|e| anyhow!("compute plan digest: {e}"))?;
+        let digest = compute_plan_digest(plan).map_err(|e| anyhow!("compute plan digest: {e}"))?;
         let digest_hex = hex::encode(&digest);
         let saved_at = unix_now();
         self.conn.execute(
@@ -233,11 +232,9 @@ impl SqliteComposeStore {
     /// Total row count. Useful for `.compose stats` style display
     /// in callers.
     pub fn count(&self) -> Result<u64> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM _compose_plans",
-            [],
-            |r| r.get(0),
-        )?;
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM _compose_plans", [], |r| r.get(0))?;
         Ok(n.max(0) as u64)
     }
 

@@ -48,12 +48,12 @@
 //! `urn:my:detect` → `"detect"`). A caller who wants an explicit ID can
 //! set `comp:id` on the component subject; the derived form is a fallback.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
+use compose_core::types::ExplicitExport;
 use compose_core::{
     Capability, CapabilityLevel, ComponentId, ComponentSpec, DeterminismMode, Digest,
     ImportBinding, Linkage, PlanV1, Policy, ResourceLimits, SecretBinding,
 };
-use compose_core::types::ExplicitExport;
 use std::collections::{BTreeMap, HashMap};
 
 /// Default plan IRI used by [`plan_to_rdf`] and [`plan_to_turtle`] when the
@@ -155,47 +155,47 @@ pub mod vocab {
 
     // Plan top-level class + properties
     iri!(COMPOSITION_PLAN, "CompositionPlan");
-    iri!(VERSION,          "version");
-    iri!(ROOT,             "root");
-    iri!(COMPONENT,        "component");
-    iri!(BINDING,          "binding");
-    iri!(SECRET,           "secret");
-    iri!(POLICY,           "policy");
-    iri!(LINKAGE,          "linkage");
+    iri!(VERSION, "version");
+    iri!(ROOT, "root");
+    iri!(COMPONENT, "component");
+    iri!(BINDING, "binding");
+    iri!(SECRET, "secret");
+    iri!(POLICY, "policy");
+    iri!(LINKAGE, "linkage");
 
     // Component
-    iri!(COMPONENT_CLASS,  "Component");
-    iri!(ID,               "id");
-    iri!(SOURCE,           "source");
-    iri!(DIGEST,           "digest");
+    iri!(COMPONENT_CLASS, "Component");
+    iri!(ID, "id");
+    iri!(SOURCE, "source");
+    iri!(DIGEST, "digest");
 
     // Binding
-    iri!(IMPORT,           "import");
-    iri!(PROVIDER,         "provider");
-    iri!(EXPORT,           "export");
-    iri!(CONSUMER,         "consumer");
+    iri!(IMPORT, "import");
+    iri!(PROVIDER, "provider");
+    iri!(EXPORT, "export");
+    iri!(CONSUMER, "consumer");
 
     // Secret binding
-    iri!(SECRET_ID,        "secretId");
-    iri!(BACKEND,          "backend");
+    iri!(SECRET_ID, "secretId");
+    iri!(BACKEND, "backend");
 
     // Policy
-    iri!(DETERMINISM,      "determinism");
-    iri!(CAPABILITY,       "capability");
-    iri!(CPU_MS,           "cpuMs");
-    iri!(MEMORY_BYTES,     "memoryBytes");
-    iri!(IO_OPS,           "ioOps");
-    iri!(TENANT,           "tenant");
+    iri!(DETERMINISM, "determinism");
+    iri!(CAPABILITY, "capability");
+    iri!(CPU_MS, "cpuMs");
+    iri!(MEMORY_BYTES, "memoryBytes");
+    iri!(IO_OPS, "ioOps");
+    iri!(TENANT, "tenant");
 
     // Capability
-    iri!(NAME,             "name");
-    iri!(LEVEL,            "level");
+    iri!(NAME, "name");
+    iri!(LEVEL, "level");
 
     // Explicit-export re-surface. Writer emits these under a blank-node
     // subject; reader walks them back into `PlanV1.explicit_exports`.
-    iri!(EXPLICIT_EXPORT,  "explicitExport");
-    iri!(SOURCE_INSTANCE,  "sourceInstance");
-    iri!(INTERFACE_NAME,   "interfaceName");
+    iri!(EXPLICIT_EXPORT, "explicitExport");
+    iri!(SOURCE_INSTANCE, "sourceInstance");
+    iri!(INTERFACE_NAME, "interfaceName");
 
     // Composed-artifact anchoring — links the plan IRI to the composed
     // wasm's location and (optionally) content-address. Emitted by
@@ -210,8 +210,8 @@ pub mod vocab {
     // `compositionDigest` — SHA-256 of the composed bytes as a
     // lowercase-hex `xsd:string`. Stable across re-hosting; useful for
     // content verification independent of URL scheme.
-    iri!(HAS_ARTIFACT,        "hasArtifact");
-    iri!(COMPOSITION_DIGEST,  "compositionDigest");
+    iri!(HAS_ARTIFACT, "hasArtifact");
+    iri!(COMPOSITION_DIGEST, "compositionDigest");
 }
 
 /// Convenience re-exports of the composed-artifact anchor predicate
@@ -388,11 +388,7 @@ fn turtle_to_triples(turtle: &str) -> Result<Vec<Triple>> {
                 let datatype_iri = datatype_nn.map(|n| n.into_string());
                 let datatype = match (&language, &datatype_iri) {
                     (Some(_), _) => None,
-                    (None, Some(iri))
-                        if iri == "http://www.w3.org/2001/XMLSchema#string" =>
-                    {
-                        None
-                    }
+                    (None, Some(iri)) if iri == "http://www.w3.org/2001/XMLSchema#string" => None,
                     (None, Some(_)) => datatype_iri,
                     (None, None) => None,
                 };
@@ -431,11 +427,7 @@ fn component_from_rdf(subject: &Term, index: &TripleIndex<'_>) -> Result<Compone
     let digest = parse_digest(&digest_str)
         .with_context(|| format!("component {id}: parsing comp:digest {digest_str:?}"))?;
 
-    Ok(ComponentSpec {
-        id,
-        digest,
-        source,
-    })
+    Ok(ComponentSpec { id, digest, source })
 }
 
 fn binding_from_rdf<'a>(
@@ -718,7 +710,8 @@ impl<'a> TripleIndex<'a> {
     /// as a fallback — useful for `comp:source` which the vocabulary
     /// documents as either).
     fn literal(&self, subject: &Term, predicate: &str) -> Option<String> {
-        self.single(subject, predicate).map(|t| t.as_string().to_string())
+        self.single(subject, predicate)
+            .map(|t| t.as_string().to_string())
     }
 }
 
@@ -1511,7 +1504,10 @@ mod tests {
             assert_eq!(g.backend_uri, w.backend_uri, "secret backend");
         }
 
-        assert_eq!(got.policy.determinism, want.policy.determinism, "determinism");
+        assert_eq!(
+            got.policy.determinism, want.policy.determinism,
+            "determinism"
+        );
         assert_eq!(got.policy.tenant, want.policy.tenant, "tenant");
         assert_eq!(
             got.policy.limits.cpu_ms, want.policy.limits.cpu_ms,
@@ -1546,9 +1542,19 @@ mod tests {
             want.explicit_exports.len(),
             "explicit_exports len"
         );
-        for (g, w) in got.explicit_exports.iter().zip(want.explicit_exports.iter()) {
-            assert_eq!(g.source_instance, w.source_instance, "explicit export source_instance");
-            assert_eq!(g.interface_name, w.interface_name, "explicit export interface_name");
+        for (g, w) in got
+            .explicit_exports
+            .iter()
+            .zip(want.explicit_exports.iter())
+        {
+            assert_eq!(
+                g.source_instance, w.source_instance,
+                "explicit export source_instance"
+            );
+            assert_eq!(
+                g.interface_name, w.interface_name,
+                "explicit export interface_name"
+            );
         }
     }
 
@@ -1573,8 +1579,8 @@ mod tests {
     fn writer_minimal_plan_round_trip() {
         let want = minimal_plan();
         let ts = plan_to_rdf(&want);
-        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts)
-            .expect("minimal plan round-trip should parse");
+        let got =
+            plan_from_rdf(DEFAULT_PLAN_IRI, &ts).expect("minimal plan round-trip should parse");
         assert_plans_equal(&got, &want);
     }
 
@@ -1651,8 +1657,7 @@ mod tests {
     fn writer_full_plan_round_trip() {
         let want = full_plan();
         let ts = plan_to_rdf(&want);
-        let got =
-            plan_from_rdf(DEFAULT_PLAN_IRI, &ts).expect("full plan round-trip should parse");
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts).expect("full plan round-trip should parse");
         assert_plans_equal(&got, &want);
     }
 
@@ -1698,9 +1703,9 @@ mod tests {
     fn writer_static_linkage_omits_predicate() {
         let plan = minimal_plan();
         let ts = plan_to_rdf(&plan);
-        let has_linkage = ts.iter().any(|t| {
-            matches!(&t.predicate, Term::Iri(p) if p == vocab::LINKAGE)
-        });
+        let has_linkage = ts
+            .iter()
+            .any(|t| matches!(&t.predicate, Term::Iri(p) if p == vocab::LINKAGE));
         assert!(
             !has_linkage,
             "static linkage should be omitted for canonical output"
@@ -1780,8 +1785,8 @@ mod tests {
             },
         ];
         let ts = plan_to_rdf(&want);
-        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts)
-            .expect("explicit_exports round-trip should parse");
+        let got =
+            plan_from_rdf(DEFAULT_PLAN_IRI, &ts).expect("explicit_exports round-trip should parse");
         assert_eq!(got.explicit_exports.len(), 2);
         assert_eq!(got.explicit_exports[0].source_instance, "hello");
         assert_eq!(
@@ -1864,9 +1869,7 @@ mod tests {
         // triples.
         let names: Vec<String> = ts
             .iter()
-            .filter(|t| {
-                matches!(&t.predicate, Term::Iri(p) if p == vocab::NAME)
-            })
+            .filter(|t| matches!(&t.predicate, Term::Iri(p) if p == vocab::NAME))
             .filter_map(|t| match &t.object {
                 Term::Literal { value, .. } => Some(value.clone()),
                 _ => None,
@@ -1949,7 +1952,10 @@ mod tests {
         let bad = "this is not turtle @@@";
         let e = plan_from_turtle(bad).expect_err("expected parse error");
         let msg = format!("{e}");
-        assert!(msg.contains("turtle parse error"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("turtle parse error"),
+            "unexpected error: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -1976,12 +1982,8 @@ mod tests {
     #[test]
     fn plan_to_turtle_with_artifact_omits_digest_when_none() {
         let plan = minimal_plan();
-        let ttl = plan_to_turtle_with_artifact(
-            &plan,
-            "urn:my:plan-no-digest",
-            "sha256://cafebabe",
-            None,
-        );
+        let ttl =
+            plan_to_turtle_with_artifact(&plan, "urn:my:plan-no-digest", "sha256://cafebabe", None);
         assert!(
             !ttl.contains("comp:compositionDigest"),
             "digest predicate must NOT appear when digest_hex is None:\n{ttl}"
@@ -1991,8 +1993,7 @@ mod tests {
     #[test]
     fn plan_to_turtle_with_artifact_emits_digest_when_some() {
         let plan = minimal_plan();
-        let hex =
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let ttl = plan_to_turtle_with_artifact(
             &plan,
             "urn:my:plan-with-digest",

@@ -16,7 +16,9 @@ use wasmtime::{
 };
 use wasmtime_wasi::p2::bindings::sync::Command;
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
-use wasmtime_wasi::{DirPerms, FilePerms, ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{
+    DirPerms, FilePerms, ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView,
+};
 
 /// A host-to-guest filesystem preopen for `run_cli_with_mounts`. Mirrors
 /// `wasmtime run --dir HOST::GUEST` semantics: the host directory is opened
@@ -749,15 +751,12 @@ impl ExecHandler {
             Some((iface, func)) => (iface, Some(func)),
             None => (export_name, None),
         };
-        let (top_item, top_idx) =
-            instance
-                .get_export(&mut store, None, top)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::ExecMissingExport,
-                        format!("export '{}' not found", export_name),
-                    )
-                })?;
+        let (top_item, top_idx) = instance.get_export(&mut store, None, top).ok_or_else(|| {
+            Error::new(
+                ErrorCode::ExecMissingExport,
+                format!("export '{}' not found", export_name),
+            )
+        })?;
         let func_idx = match sub {
             Some(sub) => match instance.get_export(&mut store, Some(&top_idx), sub) {
                 Some((wasmtime::component::types::ComponentItem::ComponentFunc(_), idx)) => idx,
@@ -1043,7 +1042,10 @@ impl ExecHandler {
                 let msg = if tail_str.is_empty() {
                     format!("command execution failed: {}", e)
                 } else {
-                    format!("command execution failed: {}\nguest stderr:\n{}", e, tail_str)
+                    format!(
+                        "command execution failed: {}\nguest stderr:\n{}",
+                        e, tail_str
+                    )
                 };
                 return Err(Error::new(ErrorCode::ExecTrap, msg));
             }

@@ -16,9 +16,9 @@
 //! * Content-addressed cache. Cache keys are the digest, not the source
 //!   URL, so a component reachable at multiple URLs is stored once.
 
-use anyhow::{Context, Result, bail};
 #[cfg(feature = "oci")]
 use anyhow::anyhow;
+use anyhow::{bail, Context, Result};
 use sha2::{Digest as _, Sha256};
 use std::{
     fs,
@@ -46,7 +46,10 @@ impl Sha256Digest {
         let hex = s.strip_prefix("sha256:").unwrap_or(s);
         let bytes = hex::decode(hex).with_context(|| format!("digest not valid hex: {s}"))?;
         if bytes.len() != 32 {
-            bail!("digest must be 32 bytes / 64 hex chars, got {}", bytes.len());
+            bail!(
+                "digest must be 32 bytes / 64 hex chars, got {}",
+                bytes.len()
+            );
         }
         let mut out = [0u8; 32];
         out.copy_from_slice(&bytes);
@@ -89,11 +92,7 @@ impl Default for FetcherConfig {
 /// The main entry point. Given a `source` URL and optionally the expected
 /// digest recorded in the plan, return the artifact bytes. Fetches at most
 /// once per unique digest (cache hit) and refuses on integrity mismatch.
-pub fn fetch(
-    source: &str,
-    expected: Option<Sha256Digest>,
-    cfg: &FetcherConfig,
-) -> Result<Vec<u8>> {
+pub fn fetch(source: &str, expected: Option<Sha256Digest>, cfg: &FetcherConfig) -> Result<Vec<u8>> {
     // Cache lookup happens BEFORE the network call when we already have the
     // digest — no reason to hit the wire for content we've stored before.
     if let Some(d) = expected {
@@ -122,7 +121,10 @@ pub fn fetch(
     // Populate the cache under the actual digest whether or not the plan
     // specified one — future fetches with the same digest hit disk.
     if let Err(e) = write_to_cache(&cfg.cache_dir, &actual, &bytes) {
-        warn!(?e, "compose-fetcher: cache write failed; continuing without cache");
+        warn!(
+            ?e,
+            "compose-fetcher: cache write failed; continuing without cache"
+        );
     }
     Ok(bytes)
 }
@@ -159,10 +161,11 @@ fn fetch_file(path: &str) -> Result<Vec<u8>> {
 }
 
 fn fetch_http(url: &str, cfg: &FetcherConfig) -> Result<Vec<u8>> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(cfg.http_timeout)
-        .build();
-    let resp = agent.get(url).call().with_context(|| format!("HTTP GET {url}"))?;
+    let agent = ureq::AgentBuilder::new().timeout(cfg.http_timeout).build();
+    let resp = agent
+        .get(url)
+        .call()
+        .with_context(|| format!("HTTP GET {url}"))?;
     if resp.status() < 200 || resp.status() >= 300 {
         bail!("compose-fetcher: HTTP {} for {}", resp.status(), url);
     }
@@ -195,7 +198,7 @@ fn fetch_ipfs(rest: &str, cfg: &FetcherConfig) -> Result<Vec<u8>> {
 
 #[cfg(feature = "oci")]
 fn fetch_oci(source: &str, _cfg: &FetcherConfig) -> Result<Vec<u8>> {
-    use oci_client::{Client, Reference, secrets::RegistryAuth, manifest::WASM_LAYER_MEDIA_TYPE};
+    use oci_client::{manifest::WASM_LAYER_MEDIA_TYPE, secrets::RegistryAuth, Client, Reference};
 
     // `oci://registry/image:tag` -> `registry/image:tag`
     let raw = source
@@ -220,7 +223,11 @@ fn fetch_oci(source: &str, _cfg: &FetcherConfig) -> Result<Vec<u8>> {
         // Bytecode Alliance packaging convention) there is a single layer
         // whose media type is the WASM layer type; take that one.
         let image = client
-            .pull(&reference, &RegistryAuth::Anonymous, vec![WASM_LAYER_MEDIA_TYPE])
+            .pull(
+                &reference,
+                &RegistryAuth::Anonymous,
+                vec![WASM_LAYER_MEDIA_TYPE],
+            )
             .await
             .with_context(|| format!("OCI pull {source}"))?;
         let mut layers = image.layers;
@@ -262,7 +269,8 @@ fn write_to_cache(cache_dir: &Path, d: &Sha256Digest, bytes: &[u8]) -> Result<()
     // leave a corrupt cache entry visible.
     let tmp = p.with_extension("tmp");
     fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, &p).with_context(|| format!("renaming {} -> {}", tmp.display(), p.display()))?;
+    fs::rename(&tmp, &p)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), p.display()))?;
     Ok(())
 }
 

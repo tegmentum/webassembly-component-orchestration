@@ -127,7 +127,11 @@ fn handle_exec(host: &CompositorHost, action: ExecAction, _format: &OutputFormat
             let exec_handler = host.exec_handler();
             let result = exec_handler.invoke(&plan_data, &export, EMPTY_CBOR_ARRAY)?;
 
-            println!("Invoked export '{}' ({} result bytes)", export, result.len());
+            println!(
+                "Invoked export '{}' ({} result bytes)",
+                export,
+                result.len()
+            );
             println!("Result (CBOR, hex): {}", hex::encode(&result));
             Ok(())
         }
@@ -214,9 +218,7 @@ fn handle_trust(host: &CompositorHost, action: TrustAction, format: &OutputForma
 
             let signature_bytes = signature
                 .as_ref()
-                .map(|p| {
-                    fs::read(p).with_context(|| format!("Failed to read signature {:?}", p))
-                })
+                .map(|p| fs::read(p).with_context(|| format!("Failed to read signature {:?}", p)))
                 .transpose()?;
 
             let result = host

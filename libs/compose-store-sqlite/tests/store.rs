@@ -23,7 +23,7 @@ fn fixture_plan(name_suffix: &str) -> PlanV1 {
         secrets: vec![],
         policy: Policy::default(),
         linkage: Default::default(),
-            explicit_exports: vec![],
+        explicit_exports: vec![],
     }
 }
 
@@ -98,10 +98,7 @@ fn get_by_digest_finds_the_row() {
     let hex_digest = hex::encode(compute_plan_digest(&plan).unwrap());
     let row = s.get_by_digest(&hex_digest).unwrap().expect("row");
     assert_eq!(row.name, "name1");
-    assert!(s
-        .get_by_digest(&"00".repeat(32))
-        .unwrap()
-        .is_none());
+    assert!(s.get_by_digest(&"00".repeat(32)).unwrap().is_none());
 }
 
 #[test]

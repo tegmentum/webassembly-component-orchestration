@@ -75,7 +75,7 @@ fn demo_plan_validation(host: &CompositorHost) -> Result<()> {
         bindings: vec![],
         secrets: vec![],
         linkage: Default::default(),
-            explicit_exports: vec![],
+        explicit_exports: vec![],
         policy: Policy::default(),
     };
 
@@ -205,7 +205,7 @@ fn demo_policy_enforcement(host: &CompositorHost) -> Result<()> {
         bindings: vec![],
         secrets: vec![],
         linkage: Default::default(),
-            explicit_exports: vec![],
+        explicit_exports: vec![],
         policy: Policy {
             determinism: DeterminismMode::Strict,
             capabilities: vec![
@@ -240,7 +240,7 @@ fn demo_policy_enforcement(host: &CompositorHost) -> Result<()> {
         bindings: vec![],
         secrets: vec![],
         linkage: Default::default(),
-            explicit_exports: vec![],
+        explicit_exports: vec![],
         policy: Policy {
             determinism: DeterminismMode::Relaxed,
             capabilities: vec![
@@ -332,7 +332,7 @@ fn demo_tenant_isolation(host: &CompositorHost) -> Result<()> {
         bindings: vec![],
         secrets: vec![],
         linkage: Default::default(),
-            explicit_exports: vec![],
+        explicit_exports: vec![],
         policy: Policy {
             determinism: DeterminismMode::Strict,
             capabilities: vec![Capability {

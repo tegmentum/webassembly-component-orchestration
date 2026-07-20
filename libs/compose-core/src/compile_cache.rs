@@ -275,9 +275,7 @@ mod tests {
             .store(&component, "engine-1", "aarch64-macos", artifact)
             .unwrap();
 
-        let loaded = cache
-            .load(&component, "engine-1", "aarch64-macos")
-            .unwrap();
+        let loaded = cache.load(&component, "engine-1", "aarch64-macos").unwrap();
         assert_eq!(loaded.as_deref(), Some(&artifact[..]));
         assert!(cache
             .contains(&component, "engine-1", "aarch64-macos")

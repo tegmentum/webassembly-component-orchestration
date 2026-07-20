@@ -508,12 +508,18 @@ fn secret_from_rdf(subject: &Term, index: &TripleIndex<'_>) -> Result<SecretBind
 }
 
 fn policy_from_rdf(subject: &Term, index: &TripleIndex<'_>) -> Result<Policy> {
+    // Absent comp:determinism inherits Policy::default(), which is
+    // Relaxed — matches HostPolicy::default(), the canonical
+    // hello-plan.cbor vector, and the runtime-linking flow (see
+    // docs/runtime-linking.md). Keeping this in lockstep with
+    // Policy::default() lets the writer stop having to emit
+    // determinism explicitly on default-policy plans.
     let determinism = index
         .literal(subject, vocab::DETERMINISM)
         .as_deref()
         .map(parse_determinism)
         .transpose()?
-        .unwrap_or(DeterminismMode::Strict);
+        .unwrap_or_else(|| Policy::default().determinism);
 
     let mut capabilities = Vec::new();
     for cap_ref in index.iter(subject, vocab::CAPABILITY) {
@@ -874,8 +880,11 @@ pub fn plan_to_rdf_with_iri(plan: &PlanV1, plan_iri: &str) -> Vec<Triple> {
         ));
     }
 
-    // Policy — always emitted, always determinism-explicit so the
-    // reader's inner default (Strict) doesn't shadow our Relaxed default.
+    // Policy — always emitted. Determinism is written explicitly so
+    // consumers reading a subset of triples see the intended value
+    // without depending on Policy::default() semantics; reader and
+    // writer agree on the default (Relaxed) but the round-trip is
+    // strongest when nothing is left implicit.
     let policy_subj = Term::blank("pol".to_string());
     ts.push(Triple::new(
         plan_subject.clone(),
@@ -1649,9 +1658,10 @@ mod tests {
 
     #[test]
     fn writer_default_policy_round_trip() {
-        // Default Policy is Relaxed. Reader falls back to Strict inside
-        // policy_from_rdf if `comp:determinism` is missing, so the writer
-        // always emits it explicitly. This test guards that behaviour.
+        // Reader and writer both default to Policy::default() =
+        // Relaxed, so the round-trip holds trivially. Kept as a guard
+        // in case Policy::default() drifts or the reader stops
+        // sourcing its fallback from Policy::default().
         let mut want = minimal_plan();
         want.policy = Policy::default();
         assert!(matches!(want.policy.determinism, DeterminismMode::Relaxed));
@@ -1659,6 +1669,29 @@ mod tests {
         let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts).unwrap();
         assert!(matches!(got.policy.determinism, DeterminismMode::Relaxed));
         assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn reader_omitted_determinism_matches_policy_default() {
+        // Direct check of the reader's fallback: a policy blank node
+        // with no comp:determinism triple must yield
+        // Policy::default().determinism (currently Relaxed). This is
+        // the invariant that lets the writer skip the explicit
+        // determinism triple safely; if Policy::default() flips, the
+        // reader flips with it.
+        let plan = "urn:my:reader-default-policy";
+        let a = "urn:my:a";
+        let pn = "_:pol";
+        let triples = vec![
+            t(iri(plan), p(vocab::RDF_TYPE), iri(vocab::COMPOSITION_PLAN)),
+            t(iri(plan), p(vocab::ROOT), iri(a)),
+            t(iri(plan), p(vocab::COMPONENT), iri(a)),
+            t(iri(a), p(vocab::DIGEST), lit(D1)),
+            t(iri(plan), p(vocab::POLICY), blank(pn)),
+            // Intentionally no comp:determinism triple.
+        ];
+        let got = plan_from_rdf(plan, &triples).unwrap();
+        assert_eq!(got.policy.determinism, Policy::default().determinism);
     }
 
     #[test]

@@ -191,8 +191,8 @@ pub mod vocab {
     iri!(NAME,             "name");
     iri!(LEVEL,            "level");
 
-    // Explicit-export re-surface (writer-only for now: the current reader
-    // does not parse these; see `plan_to_rdf` for the round-trip note).
+    // Explicit-export re-surface. Writer emits these under a blank-node
+    // subject; reader walks them back into `PlanV1.explicit_exports`.
     iri!(EXPLICIT_EXPORT,  "explicitExport");
     iri!(SOURCE_INSTANCE,  "sourceInstance");
     iri!(INTERFACE_NAME,   "interfaceName");
@@ -315,6 +315,17 @@ pub fn plan_from_rdf(plan_iri: &str, triples: &[Triple]) -> Result<PlanV1> {
         .transpose()?
         .unwrap_or_default();
 
+    // Explicit exports — each `comp:explicitExport` object is a blank
+    // node with `comp:sourceInstance` + `comp:interfaceName` literals.
+    // Emitted in plan order by the writer; we preserve that order on
+    // the way back so the round-trip is stable for downstream consumers
+    // (e.g. `PlanValidator::validate_structure` which checks each entry
+    // against the components list).
+    let mut explicit_exports = Vec::new();
+    for e_ref in index.iter(&plan_subject, vocab::EXPLICIT_EXPORT) {
+        explicit_exports.push(explicit_export_from_rdf(e_ref, &index)?);
+    }
+
     Ok(PlanV1 {
         version,
         root,
@@ -323,7 +334,7 @@ pub fn plan_from_rdf(plan_iri: &str, triples: &[Triple]) -> Result<PlanV1> {
         secrets,
         policy,
         linkage,
-        explicit_exports: Vec::new(),
+        explicit_exports,
     })
 }
 
@@ -342,9 +353,8 @@ pub fn plan_from_turtle(turtle: &str) -> Result<PlanV1> {
 /// documented in the crate-level comment.
 ///
 /// This is the reader half of the round trip: `plan_from_turtle(
-/// plan_to_turtle(p))` yields `p` for any plan whose
-/// `explicit_exports` list is empty (the reader's current limit — see
-/// [`plan_from_rdf`]).
+/// plan_to_turtle(p))` yields `p` for any valid plan (see
+/// [`plan_from_rdf`] for the field-by-field round-trip contract).
 pub fn plan_from_turtle_with_iri(turtle: &str, plan_iri: &str) -> Result<PlanV1> {
     let triples = turtle_to_triples(turtle)?;
     plan_from_rdf(plan_iri, &triples)
@@ -462,6 +472,19 @@ fn binding_from_rdf<'a>(
         import_name,
         provider_id,
         export_name,
+    })
+}
+
+fn explicit_export_from_rdf(subject: &Term, index: &TripleIndex<'_>) -> Result<ExplicitExport> {
+    let source_instance = index
+        .literal(subject, vocab::SOURCE_INSTANCE)
+        .ok_or_else(|| anyhow!("explicit export {subject:?}: comp:sourceInstance is required"))?;
+    let interface_name = index
+        .literal(subject, vocab::INTERFACE_NAME)
+        .ok_or_else(|| anyhow!("explicit export {subject:?}: comp:interfaceName is required"))?;
+    Ok(ExplicitExport {
+        source_instance,
+        interface_name,
     })
 }
 
@@ -702,11 +725,8 @@ impl<'a> TripleIndex<'a> {
 ///
 /// The writer is the counterpart to [`plan_from_rdf`] and is designed for
 /// a lossless round-trip: `plan_from_rdf(DEFAULT_PLAN_IRI,
-/// &plan_to_rdf(p))` reconstructs `p` for any valid plan whose
-/// `explicit_exports` list is empty. See [`plan_to_rdf_with_iri`] for the
-/// full round-trip contract and the [explicit-exports gap][gap].
-///
-/// [gap]: plan_to_rdf_with_iri
+/// &plan_to_rdf(p))` reconstructs `p` for any valid plan. See
+/// [`plan_to_rdf_with_iri`] for the full round-trip contract.
 pub fn plan_to_rdf(plan: &PlanV1) -> Vec<Triple> {
     plan_to_rdf_with_iri(plan, DEFAULT_PLAN_IRI)
 }
@@ -715,8 +735,8 @@ pub fn plan_to_rdf(plan: &PlanV1) -> Vec<Triple> {
 ///
 /// # Round-trip contract
 ///
-/// For any [`PlanV1`] whose `explicit_exports` list is empty and whose
-/// components carry SHA-256 digests, the sequence
+/// For any [`PlanV1`] whose components carry SHA-256 digests, the
+/// sequence
 ///
 /// ```ignore
 /// let ts = plan_to_rdf_with_iri(&p, "urn:my:plan");
@@ -729,17 +749,8 @@ pub fn plan_to_rdf(plan: &PlanV1) -> Vec<Triple> {
 /// pre-sorts capabilities so that its own output already matches the
 /// reader's canonicalization; components are emitted in the plan's own
 /// order and sorted on the way back in by the reader.
-///
-/// # Explicit-exports gap
-///
-/// The current [`plan_from_rdf`] does not parse `comp:explicitExport`
-/// blank nodes. The writer emits them (under the vocab constants added
-/// alongside `plan_to_rdf`) so the vocab surface is complete and a
-/// future reader upgrade can pick them up, but until that lands a plan
-/// with non-empty `explicit_exports` does NOT round-trip: the reader
-/// will reconstruct it with `explicit_exports: vec![]`. Callers that
-/// need this today should either upgrade the reader or wrap the CBOR
-/// payload alongside the RDF.
+/// `explicit_exports` round-trip in the plan's own insertion order,
+/// matching the CBOR path.
 ///
 /// # Component identity
 ///
@@ -942,8 +953,8 @@ pub fn plan_to_rdf_with_iri(plan: &PlanV1, plan_iri: &str) -> Vec<Triple> {
         ));
     }
 
-    // Explicit exports — written but currently one-way (see the
-    // "Explicit-exports gap" note on this function).
+    // Explicit exports — reader parses these back via
+    // `explicit_export_from_rdf`; the round-trip is stable.
     for (i, e) in plan.explicit_exports.iter().enumerate() {
         let subj = Term::blank(explicit_export_bnode_label(i));
         ts.push(Triple::new(
@@ -1021,15 +1032,6 @@ fn hex_encode(bytes: &[u8]) -> String {
         out.push(HEX[(b & 0x0F) as usize] as char);
     }
     out
-}
-
-// Explicit-exports today are writer-only. Silence dead-code warnings on
-// the ExplicitExport shape — the field access in the writer above is
-// enough on stable rustc but keeping this reference explicit documents
-// intent for future readers.
-#[allow(dead_code)]
-fn _explicit_export_touch(e: &ExplicitExport) -> (&str, &str) {
-    (&e.source_instance, &e.interface_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,14 +1529,18 @@ mod tests {
 
         assert_eq!(got.linkage, want.linkage, "linkage");
 
-        // Round-trip contract only holds for empty explicit_exports until
-        // the reader learns to parse them. The tests below never seed a
-        // non-empty list, so this assertion doubles as a canary.
+        // Explicit exports round-trip in insertion order — the reader
+        // walks `comp:explicitExport` triples in the same order the
+        // writer emitted them, matching the CBOR path's behavior.
         assert_eq!(
             got.explicit_exports.len(),
             want.explicit_exports.len(),
-            "explicit_exports len (reader gap)"
+            "explicit_exports len"
         );
+        for (g, w) in got.explicit_exports.iter().zip(want.explicit_exports.iter()) {
+            assert_eq!(g.source_instance, w.source_instance, "explicit export source_instance");
+            assert_eq!(g.interface_name, w.interface_name, "explicit export interface_name");
+        }
     }
 
     fn minimal_plan() -> PlanV1 {
@@ -1720,6 +1726,63 @@ mod tests {
         assert_eq!(got.bindings.len(), 1);
         assert!(got.bindings[0].consumer_id.is_none());
         assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_explicit_exports_round_trip() {
+        // Two explicit exports on the root component — the reader must
+        // rebuild the list in the writer's insertion order so downstream
+        // validation (structure checks, digest computation) matches
+        // what the CBOR path would see.
+        use compose_core::types::ExplicitExport;
+        let mut want = minimal_plan();
+        want.explicit_exports = vec![
+            ExplicitExport {
+                source_instance: "hello".into(),
+                interface_name: "sqlite:extension/types@0.1.0".into(),
+            },
+            ExplicitExport {
+                source_instance: "hello".into(),
+                interface_name: "sqlink:wasm/dispatch-bridge@0.1.0".into(),
+            },
+        ];
+        let ts = plan_to_rdf(&want);
+        let got = plan_from_rdf(DEFAULT_PLAN_IRI, &ts)
+            .expect("explicit_exports round-trip should parse");
+        assert_eq!(got.explicit_exports.len(), 2);
+        assert_eq!(got.explicit_exports[0].source_instance, "hello");
+        assert_eq!(
+            got.explicit_exports[0].interface_name,
+            "sqlite:extension/types@0.1.0"
+        );
+        assert_eq!(
+            got.explicit_exports[1].interface_name,
+            "sqlink:wasm/dispatch-bridge@0.1.0"
+        );
+        assert_plans_equal(&got, &want);
+    }
+
+    #[test]
+    fn writer_explicit_exports_turtle_round_trip() {
+        // Turtle-level round-trip proves the vocab constants render and
+        // re-parse cleanly through oxttl, not just the in-memory
+        // Triple pipeline.
+        use compose_core::types::ExplicitExport;
+        let mut want = minimal_plan();
+        want.explicit_exports = vec![ExplicitExport {
+            source_instance: "hello".into(),
+            interface_name: "foo:bar/baz@0.1.0".into(),
+        }];
+        let ttl = plan_to_turtle(&want);
+        assert!(
+            ttl.contains("comp:explicitExport"),
+            "expected comp:explicitExport predicate in Turtle output:\n{ttl}"
+        );
+        let got = plan_from_turtle(&ttl)
+            .unwrap_or_else(|e| panic!("plan_from_turtle failed: {e:#}\n---\n{ttl}"));
+        assert_eq!(got.explicit_exports.len(), 1);
+        assert_eq!(got.explicit_exports[0].source_instance, "hello");
+        assert_eq!(got.explicit_exports[0].interface_name, "foo:bar/baz@0.1.0");
     }
 
     #[test]

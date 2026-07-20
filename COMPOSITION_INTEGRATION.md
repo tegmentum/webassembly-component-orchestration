@@ -350,11 +350,18 @@ mirror the `PlanV1` fields one-for-one:
 | `comp:digest` | Component | `"sha256:<hex>"` literal |
 | `comp:source` | Component | source URL literal |
 | `comp:import` / `comp:provider` / `comp:export` / `comp:consumer` | ImportBinding | string literals |
+| `comp:explicitExport` | plan | blank node (ExplicitExport) |
+| `comp:sourceInstance` / `comp:interfaceName` | ExplicitExport | string literals |
 | `comp:hasArtifact` | plan | artifact URL (IRI) — emitted by `plan-to-turtle-with-artifact` |
 | `comp:compositionDigest` | plan | composed-bytes SHA-256 hex literal — optional; emitted by `plan-to-turtle-with-artifact` |
 
 The full round-trip (writer + reader) lives in `libs/compose-rdf`;
-see `plan_to_rdf`, `plan_to_turtle`, and `plan_from_rdf`.
+see `plan_to_rdf`, `plan_to_turtle`, and `plan_from_rdf`. Both
+`explicit_exports` and `policy.determinism` (when defaulted) are
+lossless: the reader parses `comp:explicitExport` blank nodes back
+into `PlanV1.explicit_exports` in insertion order, and the reader's
+absent-`comp:determinism` fallback tracks `Policy::default()` in
+compose-core so writer and reader defaults never drift.
 
 ### Consumer flow (Stardog example)
 
